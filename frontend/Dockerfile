@@ -11,7 +11,7 @@ COPY index.html /usr/share/nginx/html/index.html
 
 # When running in K8s, the API_BASE is handled by nginx proxy
 # For local dev, we inject it via script
-RUN sed -i "s|window.__API_BASE__ || 'http://localhost:8080'|window.__API_BASE__ || ''|" \
+RUN sed -i "s#window.__API_BASE__ || 'http://localhost:8080'#window.__API_BASE__ || ''#g" \
     /usr/share/nginx/html/index.html
 
 EXPOSE 80
