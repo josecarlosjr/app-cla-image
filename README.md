@@ -1,3 +1,3 @@
 # image-app-cla
 
-Creates images
+Uses github actions to create images and push to dockerhub
