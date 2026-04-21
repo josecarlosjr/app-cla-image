@@ -22,6 +22,10 @@ jobs:
             context: frontend
             dockerfile: frontend/Dockerfile
             image: app-cla-frontend
+          - name: personal-agent
+            context: personal-agent
+            dockerfile: personal-agent/Dockerfile
+            image: app-cla-agent
 
     steps:
       - name: Checkout
