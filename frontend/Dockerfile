@@ -1,18 +1,22 @@
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install
+
+COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js index.html ./
+COPY src ./src
+
+RUN npm run build
+
+
 FROM nginx:1.25-alpine
 
-# Remove default config
 RUN rm /etc/nginx/conf.d/default.conf
-
-# Copy custom nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Copy frontend files
-COPY index.html /usr/share/nginx/html/index.html
-
-# When running in K8s, the API_BASE is handled by nginx proxy
-# For local dev, we inject it via script
-RUN sed -i "s#window.__API_BASE__ || 'http://localhost:8080'#window.__API_BASE__ || ''#g" \
-    /usr/share/nginx/html/index.html
+COPY --from=builder /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 

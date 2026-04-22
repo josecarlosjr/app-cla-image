@@ -11,6 +11,7 @@ from telegram.ext import (
 )
 
 from agent import process_message
+from fact_extractor import extract_facts
 from memory import Memory
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
@@ -64,6 +65,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = await process_message(user_text, memory)
         await _send_long(update, response)
+
+        try:
+            await extract_facts(user_text, response, memory)
+        except Exception as e:
+            logger.warning("Fact extraction failed: %s", e)
     except Exception as e:
         logger.error("Error processing message: %s", e, exc_info=True)
         await update.message.reply_text(f"Erro ao processar mensagem: {e}")
