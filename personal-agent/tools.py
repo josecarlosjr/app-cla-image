@@ -175,6 +175,21 @@ async def get_current_datetime() -> str:
     })
 
 
+async def scan_trending_crypto() -> str:
+    from crypto_scanner import scan_trending
+    return await scan_trending()
+
+
+async def search_patterns(topic: str = "") -> str:
+    from pattern_matcher import search_patterns as _search
+    return await _search(topic)
+
+
+async def get_trend_scores() -> str:
+    from trend_scorer import get_trend_scores as _get
+    return _get()
+
+
 # ---------------------------------------------------------------------------
 # Registry — maps function-call name to the callable
 # ---------------------------------------------------------------------------
@@ -190,6 +205,9 @@ TOOL_FUNCTIONS = {
     "list_notes": list_notes,
     "read_note": read_note,
     "get_current_datetime": get_current_datetime,
+    "scan_trending_crypto": scan_trending_crypto,
+    "search_patterns": search_patterns,
+    "get_trend_scores": get_trend_scores,
 }
 
 
@@ -361,6 +379,44 @@ TOOLS_SCHEMA = [
     {
         "name": "get_current_datetime",
         "description": "Retorna data e hora actual.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "scan_trending_crypto",
+        "description": (
+            "Pesquisa as criptomoedas mais populares e com maior "
+            "crescimento nas ultimas 24h. Inclui analise de cada moeda."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "search_patterns",
+        "description": (
+            "Procura padroes detectados pelo sistema de correlacao "
+            "multi-fonte. Pode filtrar por topico."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "Topico para filtrar (ex: chips, energia, minerais). Vazio para todos.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_trend_scores",
+        "description": (
+            "Retorna os scores de tendencia (0-100) por categoria "
+            "para o mapa de dependencias geopoliticas."
+        ),
         "parameters": {
             "type": "object",
             "properties": {},

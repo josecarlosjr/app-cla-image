@@ -18,6 +18,8 @@ USER agent
 
 ENV PYTHONUNBUFFERED=1
 
+EXPOSE 8000
+
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "print('ok')"
 
