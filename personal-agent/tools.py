@@ -190,6 +190,23 @@ async def get_trend_scores() -> str:
     return _get()
 
 
+async def list_facts() -> str:
+    from memory import Memory
+    m = Memory()
+    facts = m.data.get("facts", [])
+    if not facts:
+        return "Nao ha factos guardados sobre o utilizador."
+    return "Factos aprendidos sobre o utilizador:\n" + "\n".join(
+        f"- {f}" for f in facts
+    )
+
+
+async def generate_digest_now(mode: str = "morning") -> str:
+    from digest import _gather_morning_data, _gather_evening_data, _synthesise
+    data = _gather_morning_data() if mode == "morning" else _gather_evening_data()
+    return await _synthesise(mode, data)
+
+
 # ---------------------------------------------------------------------------
 # Registry — maps function-call name to the callable
 # ---------------------------------------------------------------------------
@@ -208,6 +225,8 @@ TOOL_FUNCTIONS = {
     "scan_trending_crypto": scan_trending_crypto,
     "search_patterns": search_patterns,
     "get_trend_scores": get_trend_scores,
+    "list_facts": list_facts,
+    "generate_digest_now": generate_digest_now,
 }
 
 
@@ -420,6 +439,33 @@ TOOLS_SCHEMA = [
         "parameters": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "list_facts",
+        "description": (
+            "Lista os factos aprendidos pelo agente sobre o utilizador "
+            "(extraidos automaticamente das conversas)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "generate_digest_now",
+        "description": (
+            "Gera um digest agora (manha ou noite) sem esperar pelo CronJob. "
+            "Util quando o user pede 'faz-me um resumo'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "description": "'morning' (briefing) ou 'evening' (relatorio). Default: morning.",
+                },
+            },
         },
     },
 ]
