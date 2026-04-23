@@ -8,6 +8,7 @@ const CATEGORIES = [
   "CIENCIA_ENERGIA",
   "GEOPOLITICA_FINANCAS",
   "DEFESA_ESPACO",
+  "DEVOPS_PLATFORM",
   "DADOS",
 ];
 
@@ -137,7 +138,7 @@ export default function News() {
           </select>
 
           <div className="space-y-2">
-            {articles.slice(-50).reverse().map((a, i) => (
+            {articles.slice(0, 50).map((a, i) => (
               <a
                 key={i}
                 href={a.url}
@@ -149,6 +150,24 @@ export default function News() {
                   <span>{a.source}</span>
                   <span>·</span>
                   <span className="text-primary-500">{a.category}</span>
+                  {a.relevance_trusted && (
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold">
+                      premium
+                    </span>
+                  )}
+                  {a.relevance_score != null && (
+                    <span
+                      className={`ml-auto px-1.5 py-0.5 rounded text-xs font-mono ${
+                        a.relevance_score >= 70
+                          ? "bg-green-500/20 text-green-400"
+                          : a.relevance_score >= 45
+                          ? "bg-amber-500/20 text-amber-400"
+                          : "bg-slate-700 text-slate-400"
+                      }`}
+                    >
+                      {a.relevance_score}
+                    </span>
+                  )}
                 </div>
                 <h3 className="font-medium text-slate-100">{a.title}</h3>
                 <p className="text-sm text-slate-400 mt-1 line-clamp-2">

@@ -145,12 +145,16 @@ async def get_crypto_trending():
 
 @app.get("/api/news")
 async def get_news(category: str = Query("", description="Filter by category")):
-    articles = _read_json("feeds_cache.json")
-    if not isinstance(articles, list):
-        articles = []
+    scored = _read_json("feeds_scored.json")
+    if isinstance(scored, list) and scored:
+        articles = scored
+    else:
+        articles = _read_json("feeds_cache.json")
+        if not isinstance(articles, list):
+            articles = []
     if category:
         articles = [a for a in articles if a.get("category") == category]
-    return {"articles": articles[-100:], "total": len(articles)}
+    return {"articles": articles[:100], "total": len(articles)}
 
 
 # ---------------------------------------------------------------------------

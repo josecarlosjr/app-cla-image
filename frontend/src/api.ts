@@ -47,6 +47,8 @@ export type Article = {
   category: string;
   published: string;
   fetched_at: string;
+  relevance_score?: number;
+  relevance_trusted?: boolean;
 };
 
 export type MapNode = {

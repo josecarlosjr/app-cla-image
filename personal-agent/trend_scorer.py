@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from feeds import FeedManager, get_source_weight
+from relevance_filter import score_articles, save_scored
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 SCORES_FILE = os.path.join(DATA_DIR, "trend_scores.json")
@@ -240,6 +241,10 @@ def main():
         logger.info("  %s: %d/100 [%s] (%d articles)",
                      cat, data["score"], data["trend"], data["articles"])
     logger.info("Connections: %d", len(connections))
+
+    scored = score_articles(articles, patterns)
+    save_scored(scored)
+    logger.info("Relevance filter: %d articles passed threshold.", len(scored))
 
 
 if __name__ == "__main__":
