@@ -35,6 +35,8 @@ FEEDS = {
         ("TechCrunch", "https://techcrunch.com/feed/"),
         ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/technology-lab"),
         ("Fast Company", "https://www.fastcompany.com/latest/rss"),
+        ("The Next Web", "https://thenextweb.com/feed"),
+        ("Olhar Digital", "https://olhardigital.com.br/feed/"),
     ],
     "CIBERSEGURANCA": [
         ("The Hacker News", "https://feeds.feedburner.com/TheHackersNews"),
@@ -42,11 +44,14 @@ FEEDS = {
     ],
     "CIENCIA_ENERGIA": [
         ("Inovacao Tecnologica", "https://www.inovacaotecnologica.com.br/noticias/rss.xml"),
+        ("Science Direct", "https://rss.sciencedirect.com/publication/science/25895346"),
     ],
     "GEOPOLITICA_FINANCAS": [
         ("BBC News World", "http://feeds.bbci.co.uk/news/world/rss.xml"),
         ("Reuters Technology", "https://feeds.reuters.com/reuters/technologyNews"),
         ("Reuters Business", "https://feeds.reuters.com/reuters/businessNews"),
+        ("G1 Tecnologia", "https://g1.globo.com/rss/g1/tecnologia/"),
+        ("G1 Mundo", "https://g1.globo.com/rss/g1/mundo/"),
     ],
     "DEFESA_ESPACO": [
         ("SpaceNews", "https://spacenews.com/feed/"),
@@ -54,6 +59,11 @@ FEEDS = {
     ],
     "DADOS": [
         ("FlowingData", "https://flowingdata.com/feed"),
+    ],
+    "DEVOPS_PLATFORM": [
+        ("DZone DevOps", "https://feeds.dzone.com/devops"),
+        ("DevOps.com", "https://devops.com/feed/"),
+        ("The New Stack", "https://thenewstack.io/feed/"),
     ],
 }
 
@@ -63,10 +73,12 @@ FEEDS = {
 
 SOURCE_WEIGHTS = {
     "Reuters Technology": 3, "Reuters Business": 3,
-    "IEEE Spectrum": 3, "ACM TechNews": 3,
+    "IEEE Spectrum": 3, "ACM TechNews": 3, "Science Direct": 3,
     "BBC News World": 2, "TechCrunch": 2,
     "Dark Reading": 2, "The Hacker News": 2,
     "SpaceNews": 2, "Ars Technica": 2,
+    "G1 Tecnologia": 2, "G1 Mundo": 2,
+    "DZone DevOps": 2, "DevOps.com": 2, "The New Stack": 2,
 }
 DEFAULT_WEIGHT = 1
 
