@@ -7,7 +7,8 @@ from datetime import datetime
 import httpx
 import feedparser
 from duckduckgo_search import DDGS
-import google.generativeai as genai
+
+from llm import generate_text
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 ANALYZED_FILE = os.path.join(DATA_DIR, "analyzed_news.json")
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 MAX_ALERTS_PER_RUN = 3
 
@@ -195,10 +195,7 @@ def _score_article(article: dict, cat_cfg: dict) -> int:
     return sum(1 for kw in cat_cfg["keywords"] if kw.lower() in text)
 
 
-async def _analyze_with_gemini(article: dict, category_name: str) -> str | None:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
+async def _analyze_article(article: dict, category_name: str) -> str | None:
     prompt = (
         f'Analisa esta noticia da categoria "{category_name}".\n'
         f"Titulo: {article['title']}\n"
@@ -215,12 +212,8 @@ async def _analyze_with_gemini(article: dict, category_name: str) -> str | None:
         "Se conciso e directo. Maximo 200 palavras total."
     )
 
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        logger.error("Gemini analysis error: %s", e)
-        return None
+    text = await generate_text(prompt=prompt, max_tokens=1024)
+    return text or None
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +255,7 @@ async def main():
     alerts_sent = 0
     for article in scored[:MAX_ALERTS_PER_RUN]:
         cat_name = CATEGORIES[article["matched_category"]]["name"]
-        analysis = await _analyze_with_gemini(article, cat_name)
+        analysis = await _analyze_article(article, cat_name)
 
         if analysis:
             message = (

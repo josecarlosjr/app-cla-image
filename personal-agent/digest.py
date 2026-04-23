@@ -1,7 +1,7 @@
 """Daily digest generator.
 
 - Morning digest (9h): top trends, overnight patterns, crypto alerts, news,
-  jobs pending -> synthesised by Gemini into a readable brief
+  jobs pending -> synthesised by Claude into a readable brief
 - Evening report (21h): day summary, new facts learned, recommendations
 
 Run mode is controlled via arg: `python digest.py morning` or `python digest.py evening`.
@@ -15,7 +15,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import httpx
-import google.generativeai as genai
+
+from llm import generate_text
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
@@ -42,7 +43,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 # ---------------------------------------------------------------------------
@@ -213,13 +213,10 @@ def _is_updated_today(date_str: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Gemini synthesis
+# Claude synthesis
 # ---------------------------------------------------------------------------
 
 async def _synthesise(mode: str, data: dict) -> str:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
     if mode == "morning":
         prompt = f"""\
 Gera um BRIEFING MATINAL (09h) em portugues de Portugal para o user \
@@ -280,12 +277,8 @@ das candidaturas.
 Maximo 300 palavras.\
 """
 
-    try:
-        response = await asyncio.to_thread(model.generate_content, prompt)
-        return response.text or "Erro a gerar digest."
-    except Exception as e:
-        logger.error("Gemini digest error: %s", e)
-        return f"Digest generation failed: {e}"
+    text = await generate_text(prompt=prompt, max_tokens=1500)
+    return text or "Erro a gerar digest."
 
 
 # ---------------------------------------------------------------------------
