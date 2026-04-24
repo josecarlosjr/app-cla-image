@@ -5,13 +5,14 @@ Scores each article based on:
 2. Cross-source match: TF-IDF similarity with articles from other sources
 3. User interest match: keyword overlap with user facts
 
-Trusted sources (IEEE, ACM, Science Direct, Inovacao Tecnologica) bypass
-the threshold and are always included.
+Trusted sources (IEEE, ACM, Science Direct, Inovacao Tecnologica) get a
+score bonus but must still match at least one topic keyword.
 """
 
 import os
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -30,8 +31,30 @@ TRUSTED_SOURCES = {
     "Science Direct",
 }
 
-RELEVANCE_THRESHOLD = 30
-MAX_SCORED = 300
+TOPIC_KEYWORDS = {
+    "semiconductor", "gpu", "nvidia", "tsmc", "llm", "agi", "ai ",
+    "chip", "intel", "amd", "foundry", "neural", "machine learning",
+    "deep learning", "robot", "automat",
+    "nuclear", "solar", "wind", "grid", "battery", "datacenter",
+    "energy", "power", "renewable", "smr", "fusion",
+    "rare earth", "copper", "lithium", "cobalt", "critical mineral",
+    "mining",
+    "sanctions", "brics", "tariff", "trade war", "geopolit", "nato",
+    "us china", "eu digital",
+    "cyber", "hack", "ransomware", "vulnerability", "breach", "malware",
+    "zero-day", "apt",
+    "quantum", "superconductor", "material science", "physics",
+    "satellite", "hypersonic", "space", "missile", "defense", "orbit",
+    "stock", "recession", "inflation", "crypto", "etf", "market",
+    "interest rate",
+    "devops", "kubernetes", "docker", "cloud", "infrastructure",
+    "platform", "pipeline", "terraform", "cicd", "ci/cd",
+    "5g", "6g", "wireless", "telecom",
+}
+
+RELEVANCE_THRESHOLD = 15
+MAX_SCORED = 500
+SCORED_RETENTION_DAYS = 7
 
 
 def _load_user_facts() -> list[str]:
@@ -107,7 +130,11 @@ def score_articles(
     scored: list[dict] = []
     for i, article in enumerate(articles):
         source = article.get("source", "")
-        trusted = source in TRUSTED_SOURCES
+        is_trusted_source = source in TRUSTED_SOURCES
+        text_lower = f"{article.get('title', '')} {article.get('summary', '')}".lower()
+
+        on_topic = any(kw in text_lower for kw in TOPIC_KEYWORDS)
+        trusted = is_trusted_source and on_topic
 
         # Pattern match component (0-40)
         p_score = 40 * float(max_pattern_sim[i])
@@ -126,9 +153,7 @@ def score_articles(
 
         # User interest component (0-25)
         if fact_keywords:
-            text_words = set(
-                f"{article.get('title', '')} {article.get('summary', '')}".lower().split()
-            )
+            text_words = set(text_lower.split())
             matched = len(fact_keywords & text_words)
             f_score = 25 * min(1.0, matched / 3)
         else:
@@ -155,12 +180,12 @@ def _fallback_score(articles: list[dict], fact_keywords: set[str]) -> list[dict]
     scored = []
     for article in articles:
         source = article.get("source", "")
-        trusted = source in TRUSTED_SOURCES
+        text_lower = f"{article.get('title', '')} {article.get('summary', '')}".lower()
+        on_topic = any(kw in text_lower for kw in TOPIC_KEYWORDS)
+        trusted = source in TRUSTED_SOURCES and on_topic
 
         if fact_keywords:
-            text_words = set(
-                f"{article.get('title', '')} {article.get('summary', '')}".lower().split()
-            )
+            text_words = set(text_lower.split())
             matched = len(fact_keywords & text_words)
             f_score = 25 * min(1.0, matched / 3)
         else:
@@ -170,16 +195,53 @@ def _fallback_score(articles: list[dict], fact_keywords: set[str]) -> list[dict]
         if trusted:
             relevance = max(relevance, 50)
 
-        entry = dict(article)
-        entry["relevance_score"] = relevance
-        entry["relevance_trusted"] = trusted
-        scored.append(entry)
+        if relevance >= RELEVANCE_THRESHOLD or trusted:
+            entry = dict(article)
+            entry["relevance_score"] = relevance
+            entry["relevance_trusted"] = trusted
+            scored.append(entry)
 
     scored.sort(key=lambda x: x["relevance_score"], reverse=True)
     return scored[:MAX_SCORED]
 
 
 def save_scored(scored: list[dict]):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=SCORED_RETENTION_DAYS)
+
+    existing: list[dict] = []
+    if os.path.exists(SCORED_FILE):
+        try:
+            with open(SCORED_FILE, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            existing = []
+
+    seen_urls: set[str] = set()
+    merged: list[dict] = []
+
+    for article in scored:
+        url = article.get("url", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            merged.append(article)
+
+    for article in existing:
+        url = article.get("url", "")
+        if url and url not in seen_urls:
+            try:
+                fetched = datetime.fromisoformat(article.get("fetched_at", ""))
+                if fetched.tzinfo is None:
+                    fetched = fetched.replace(tzinfo=timezone.utc)
+                if fetched < cutoff:
+                    continue
+            except (ValueError, KeyError):
+                continue
+            seen_urls.add(url)
+            merged.append(article)
+
+    merged.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    merged = merged[:MAX_SCORED]
+
     with open(SCORED_FILE, "w", encoding="utf-8") as f:
-        json.dump(scored, f, indent=2, ensure_ascii=False)
-    logger.info("Relevance filter: %d articles scored and saved.", len(scored))
+        json.dump(merged, f, indent=2, ensure_ascii=False)
+    logger.info("Relevance filter: %d articles scored (7-day window).", len(merged))
