@@ -65,6 +65,20 @@ export type MapConnection = {
   pattern: string;
 };
 
+export type CryptoMover = {
+  id: string;
+  name: string;
+  symbol: string;
+  image: string;
+  price_usd: number;
+  change_1h: number;
+  change_24h: number;
+  change_7d: number;
+  market_cap: number;
+  market_cap_rank: number | null;
+  volume_24h: number;
+};
+
 export type Prices = Record<
   string,
   { usd?: number; eur?: number; usd_24h_change?: number }

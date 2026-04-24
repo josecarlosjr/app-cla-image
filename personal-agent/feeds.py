@@ -10,7 +10,7 @@ import httpx
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 CACHE_FILE = os.path.join(DATA_DIR, "feeds_cache.json")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
-MAX_CACHED = 500
+MAX_CACHED = 2000
 
 os.makedirs(DATA_DIR, exist_ok=True)
 

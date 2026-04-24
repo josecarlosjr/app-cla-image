@@ -1,8 +1,10 @@
 import os
 import json
+import time
 import logging
 from datetime import datetime
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -79,9 +81,70 @@ class ChatMessage(BaseModel):
 # GET /api/prices — current BTC/ETH/Brent/Gold
 # ---------------------------------------------------------------------------
 
+_movers_cache: dict = {"data": None, "expires": 0.0}
+MOVERS_TTL = 300
+
+
+@app.get("/api/crypto/movers")
+async def get_crypto_movers():
+    now = time.time()
+    if _movers_cache["data"] and now < _movers_cache["expires"]:
+        return _movers_cache["data"]
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                "https://api.coingecko.com/api/v3/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "order": "market_cap_desc",
+                    "per_page": 250,
+                    "page": 1,
+                    "sparkline": "false",
+                    "price_change_percentage": "1h,24h,7d",
+                },
+            )
+            resp.raise_for_status()
+            coins = resp.json()
+    except Exception as e:
+        logger.warning("CoinGecko movers error: %s", e)
+        if _movers_cache["data"]:
+            return _movers_cache["data"]
+        return {"gainers": [], "losers": [], "updated_at": None}
+
+    for c in coins:
+        c["_change_1h"] = c.get("price_change_percentage_1h_in_currency") or 0
+
+    valid = [c for c in coins if c.get("current_price") is not None]
+    by_change = sorted(valid, key=lambda x: x["_change_1h"], reverse=True)
+
+    def _slim(c: dict) -> dict:
+        return {
+            "id": c.get("id", ""),
+            "name": c.get("name", ""),
+            "symbol": (c.get("symbol") or "").upper(),
+            "image": c.get("image", ""),
+            "price_usd": c.get("current_price", 0),
+            "change_1h": c.get("_change_1h", 0),
+            "change_24h": c.get("price_change_percentage_24h") or 0,
+            "change_7d": c.get("price_change_percentage_7d_in_currency") or 0,
+            "market_cap": c.get("market_cap", 0),
+            "market_cap_rank": c.get("market_cap_rank"),
+            "volume_24h": c.get("total_volume", 0),
+        }
+
+    result = {
+        "gainers": [_slim(c) for c in by_change[:10]],
+        "losers": [_slim(c) for c in by_change[-10:]],
+        "updated_at": datetime.now().isoformat(),
+    }
+    _movers_cache["data"] = result
+    _movers_cache["expires"] = now + MOVERS_TTL
+    return result
+
+
 @app.get("/api/prices")
 async def get_prices():
-    import httpx
     prices = {}
 
     try:
