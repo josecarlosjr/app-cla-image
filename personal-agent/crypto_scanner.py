@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 
 import httpx
 from duckduckgo_search import DDGS
-import google.generativeai as genai
+
+from llm import generate_text
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 SCAN_FILE = os.path.join(DATA_DIR, "crypto_scan.json")
@@ -26,7 +27,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 MAX_ALERTS_PER_RUN = 5
 MIN_CHANGE_PCT = 15.0
@@ -154,9 +154,6 @@ def _web_search_sync(query: str) -> str:
 
 
 async def _analyze_coin(coin: dict, search_context: str) -> str | None:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
     change = coin["price_change_24h"]
     prompt = (
         f"A criptomoeda {coin['name']} ({coin['symbol']}) subiu "
@@ -171,12 +168,8 @@ async def _analyze_coin(coin: dict, search_context: str) -> str | None:
         "Se directo e honesto. Maximo 150 palavras."
     )
 
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        logger.error("Gemini analysis error for %s: %s", coin["name"], e)
-        return None
+    text = await generate_text(prompt=prompt, max_tokens=768)
+    return text or None
 
 
 # ---------------------------------------------------------------------------

@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 import httpx
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import google.generativeai as genai
 
 from feeds import FeedManager
+from llm import generate_text
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 PATTERNS_FILE = os.path.join(DATA_DIR, "patterns.json")
@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 MAX_PATTERNS_STORED = 100
 SIMILARITY_THRESHOLD = 0.3
@@ -177,13 +176,10 @@ def _is_strong_pattern(cluster: list[dict]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Gemini analysis for strong patterns
+# Claude analysis for strong patterns
 # ---------------------------------------------------------------------------
 
 async def _analyze_pattern(cluster: list[dict], categories: list[str]) -> dict | None:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
     titles_block = "\n".join(
         f"- [{a.get('source', '?')}] {a.get('title', '')}" for a in cluster
     )
@@ -205,31 +201,31 @@ async def _analyze_pattern(cluster: list[dict], categories: list[str]) -> dict |
         "Se conciso. Maximo 200 palavras."
     )
 
-    try:
-        response = model.generate_content(prompt)
-        text = response.text or ""
+    text = await generate_text(prompt=prompt, max_tokens=1024)
+    if not text:
+        return None
 
-        confidence = "MEDIA"
-        if "ALTA" in text.upper():
+    confidence = "MEDIA"
+    upper = text.upper()
+    if "CONFIANCA:" in upper or "CONFIANÇA:" in upper:
+        tail = upper.split("CONFIAN", 1)[1]
+        if "ALTA" in tail[:50]:
             confidence = "ALTA"
-        elif "BAIXA" in text.upper():
+        elif "BAIXA" in tail[:50]:
             confidence = "BAIXA"
 
-        return {
-            "articles": [
-                {"title": a.get("title", ""), "source": a.get("source", ""), "url": a.get("url", "")}
-                for a in cluster
-            ],
-            "categories": categories,
-            "sources": sources,
-            "num_sources": len(sources),
-            "analysis": text,
-            "confidence": confidence,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    except Exception as e:
-        logger.error("Gemini pattern analysis error: %s", e)
-        return None
+    return {
+        "articles": [
+            {"title": a.get("title", ""), "source": a.get("source", ""), "url": a.get("url", "")}
+            for a in cluster
+        ],
+        "categories": categories,
+        "sources": sources,
+        "num_sources": len(sources),
+        "analysis": text,
+        "confidence": confidence,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------

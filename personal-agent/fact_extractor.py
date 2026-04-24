@@ -1,22 +1,19 @@
 """Fact extractor — runs after each agent conversation.
 
-Uses Gemini to detect NEW facts the user revealed about themselves,
-filters duplicates via simple lowercase comparison, and stores them
-in the Memory.facts list.
+Uses Claude Haiku 4.5 via forced tool use to detect NEW facts the user
+revealed about themselves. Filters duplicates via lowercase + word overlap,
+and stores new facts in Memory.facts.
+
+Forced tool use guarantees schema-valid output (no JSON parsing errors).
 """
 
-import os
-import json
 import logging
 import asyncio
 
-import google.generativeai as genai
-
+from llm import generate_json, MODEL_HAIKU
 from memory import Memory
 
 logger = logging.getLogger(__name__)
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 EXTRACTION_PROMPT = """\
 Analisa esta conversa e extrai APENAS factos NOVOS sobre o utilizador \
@@ -38,13 +35,6 @@ Ultima mensagem do utilizador:
 Resposta do agente:
 {agent_response}
 
-Responde APENAS com JSON valido, sem texto adicional:
-{{
-    "facts": ["facto 1 em portugues de Portugal, frase curta e directa", "facto 2", ...]
-}}
-
-Se nao houver factos novos, retorna: {{"facts": []}}
-
 Exemplos de factos validos:
 - "Trabalha em Lisboa"
 - "Tem interesse em investir em Bitcoin"
@@ -55,7 +45,25 @@ Exemplos INVALIDOS (nao incluir):
 - "Perguntou sobre o tempo" (nao e facto do user)
 - "Quer saber o preco do BTC" (e uma pergunta, nao um facto)
 - "Tem interesse em cripto" (se ja esta nos factos guardados)
+
+Responde em portugues de Portugal, frases curtas e directas.
+Se nao houver factos novos, retorna uma lista vazia.
 """
+
+FACT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "facts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Lista de factos novos em portugues de Portugal, "
+                "frases curtas e directas (entre 10 e 300 caracteres cada)."
+            ),
+        }
+    },
+    "required": ["facts"],
+}
 
 
 async def extract_facts(
@@ -64,10 +72,6 @@ async def extract_facts(
     memory: Memory,
 ) -> list[str]:
     """Extract new facts from a conversation turn and persist them."""
-
-    if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not set; skipping fact extraction")
-        return []
 
     existing = memory.data.get("facts", [])
     existing_str = "\n".join(f"- {f}" for f in existing) if existing else "(nenhum)"
@@ -78,25 +82,19 @@ async def extract_facts(
         agent_response=agent_response[:1500],
     )
 
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(
-            "gemini-2.0-flash",
-            generation_config={"response_mime_type": "application/json"},
-        )
-        response = await asyncio.to_thread(model.generate_content, prompt)
-        text = (response.text or "").strip()
-    except Exception as e:
-        logger.error("Fact extraction Gemini error: %s", e)
+    result = await generate_json(
+        prompt=prompt,
+        schema=FACT_SCHEMA,
+        model=MODEL_HAIKU,
+        tool_name="save_facts",
+        tool_description="Regista factos novos aprendidos sobre o utilizador.",
+        max_tokens=512,
+    )
+
+    if not result:
         return []
 
-    try:
-        data = json.loads(text)
-        new_facts = data.get("facts", [])
-    except json.JSONDecodeError:
-        logger.warning("Fact extraction: invalid JSON: %s", text[:200])
-        return []
-
+    new_facts = result.get("facts", [])
     added = []
     existing_lower = {f.lower().strip() for f in existing}
 
