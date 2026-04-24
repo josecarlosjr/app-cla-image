@@ -1,15 +1,15 @@
 import os
 import logging
 
-import google.generativeai as genai
+import anthropic
 
 from memory import Memory
 from tools import TOOL_FUNCTIONS, TOOLS_SCHEMA
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL_NAME = "gemini-2.0-flash"
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+MODEL_NAME = "claude-sonnet-4-6"
 MAX_ITERATIONS = 5
 
 SYSTEM_PROMPT = """\
@@ -40,51 +40,33 @@ Historico recente:
 {history}"""
 
 
-# ---------------------------------------------------------------------------
-# Build Gemini-compatible tool declarations from TOOLS_SCHEMA
-# ---------------------------------------------------------------------------
-
-_TYPE_MAP = {
-    "string": genai.protos.Type.STRING,
-    "integer": genai.protos.Type.INTEGER,
-    "number": genai.protos.Type.NUMBER,
-    "boolean": genai.protos.Type.BOOLEAN,
-    "array": genai.protos.Type.ARRAY,
-    "object": genai.protos.Type.OBJECT,
-}
+_client: anthropic.AsyncAnthropic | None = None
 
 
-def _build_gemini_tools():
-    declarations = []
-    for schema in TOOLS_SCHEMA:
-        props = schema.get("parameters", {}).get("properties", {})
-        gemini_props = {
-            k: genai.protos.Schema(
-                type=_TYPE_MAP.get(v.get("type", "string"), genai.protos.Type.STRING),
-                description=v.get("description", ""),
-            )
-            for k, v in props.items()
+def _get_client() -> anthropic.AsyncAnthropic:
+    global _client
+    if _client is None:
+        _client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _client
+
+
+def _build_tools() -> list[dict]:
+    return [
+        {
+            "name": s["name"],
+            "description": s["description"],
+            "input_schema": s["parameters"],
         }
-        declarations.append(
-            genai.protos.FunctionDeclaration(
-                name=schema["name"],
-                description=schema["description"],
-                parameters=genai.protos.Schema(
-                    type=genai.protos.Type.OBJECT,
-                    properties=gemini_props,
-                    required=schema.get("parameters", {}).get("required", []),
-                ),
-            )
-        )
-    return genai.protos.Tool(function_declarations=declarations)
+        for s in TOOLS_SCHEMA
+    ]
 
-
-# ---------------------------------------------------------------------------
-# Main agentic loop
-# ---------------------------------------------------------------------------
 
 async def process_message(user_message: str, memory: Memory) -> str:
-    genai.configure(api_key=GEMINI_API_KEY)
+    if not ANTHROPIC_API_KEY:
+        logger.error("ANTHROPIC_API_KEY not set; cannot call Claude")
+        return "Erro: ANTHROPIC_API_KEY nao configurada."
+
+    client = _get_client()
 
     facts = memory.get_facts_summary()
     recent = memory.get_history(limit=20)
@@ -92,143 +74,85 @@ async def process_message(user_message: str, memory: Memory) -> str:
         f"{m['role']}: {m['content'][:200]}" for m in recent[-10:]
     )
 
-    system = SYSTEM_PROMPT.format(facts=facts, history=history_str)
-
-    model = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        system_instruction=system,
-        tools=[_build_gemini_tools()],
-    )
+    system_text = SYSTEM_PROMPT.format(facts=facts, history=history_str)
+    tools = _build_tools()
 
     memory.add_message("user", user_message)
 
-    chat = model.start_chat()
-    response = chat.send_message(user_message)
+    messages = [{"role": "user", "content": user_message}]
+
+    try:
+        response = await client.messages.create(
+            model=MODEL_NAME,
+            max_tokens=4096,
+            system=[{
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            tools=tools,
+            messages=messages,
+        )
+    except anthropic.APIError as e:
+        logger.error("Claude API error: %s", e)
+        return "Erro temporario na API. Tenta novamente."
 
     for iteration in range(MAX_ITERATIONS):
-        function_calls = [
-            part for part in response.parts
-            if part.function_call and part.function_call.name
-        ]
-        if not function_calls:
+        if response.stop_reason != "tool_use":
             break
 
-        function_responses = []
-        for fc in function_calls:
-            fn_name = fc.function_call.name
-            fn_args = dict(fc.function_call.args) if fc.function_call.args else {}
-            logger.info(
-                "Tool call [%d/%d]: %s(%s)",
-                iteration + 1, MAX_ITERATIONS, fn_name, fn_args,
-            )
-
-            tool_fn = TOOL_FUNCTIONS.get(fn_name)
-            if tool_fn:
-                try:
-                    result = await tool_fn(**fn_args)
-                except Exception as e:
-                    result = f"Erro ao executar {fn_name}: {e}"
-            else:
-                result = f"Tool '{fn_name}' nao encontrada."
-
-            function_responses.append(
-                genai.protos.Part(
-                    function_response=genai.protos.FunctionResponse(
-                        name=fn_name,
-                        response={"result": result},
-                    )
+        tool_results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                fn_name = block.name
+                fn_args = block.input or {}
+                logger.info(
+                    "Tool call [%d/%d]: %s(%s)",
+                    iteration + 1, MAX_ITERATIONS, fn_name, fn_args,
                 )
+
+                tool_fn = TOOL_FUNCTIONS.get(fn_name)
+                if tool_fn:
+                    try:
+                        result = await tool_fn(**fn_args)
+                    except Exception as e:
+                        result = f"Erro ao executar {fn_name}: {e}"
+                else:
+                    result = f"Tool '{fn_name}' nao encontrada."
+
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": str(result),
+                })
+
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": tool_results})
+
+        try:
+            response = await client.messages.create(
+                model=MODEL_NAME,
+                max_tokens=4096,
+                system=[{
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                tools=tools,
+                messages=messages,
             )
+        except anthropic.APIError as e:
+            logger.error("Claude API error during tool loop: %s", e)
+            return "Erro temporario na API durante execucao de ferramentas."
 
-        response = chat.send_message(
-            genai.protos.Content(parts=function_responses)
-        )
+    final_text = ""
+    for block in response.content:
+        if hasattr(block, "text"):
+            final_text = block.text
+            break
 
-    final_text = response.text if response.text else "Nao consegui gerar uma resposta."
+    if not final_text:
+        final_text = "Nao consegui gerar uma resposta."
+
     memory.add_message("assistant", final_text)
     return final_text
-
-
-# ---------------------------------------------------------------------------
-# Stub para migracao futura para Claude API (anthropic SDK)
-# ---------------------------------------------------------------------------
-#
-# import anthropic
-#
-# client = anthropic.Anthropic()  # usa ANTHROPIC_API_KEY do env
-#
-# async def process_message_claude(user_message: str, memory: Memory) -> str:
-#     messages = [
-#         {"role": m["role"], "content": m["content"]}
-#         for m in memory.get_history()
-#     ]
-#     messages.append({"role": "user", "content": user_message})
-#
-#     # Primeira chamada com prompt caching (beta)
-#     response = client.messages.create(
-#         model="claude-sonnet-4-20250514",
-#         max_tokens=4096,
-#         system=[{
-#             "type": "text",
-#             "text": SYSTEM_PROMPT.format(
-#                 facts=memory.get_facts_summary(), history=""
-#             ),
-#             "cache_control": {"type": "ephemeral"},   # prompt caching
-#         }],
-#         tools=[
-#             {
-#                 "name": s["name"],
-#                 "description": s["description"],
-#                 "input_schema": s["parameters"],
-#             }
-#             for s in TOOLS_SCHEMA
-#         ],
-#         messages=messages,
-#     )
-#
-#     # Agentic loop com Claude:
-#     for _ in range(MAX_ITERATIONS):
-#         if response.stop_reason != "tool_use":
-#             break
-#
-#         tool_results = []
-#         for block in response.content:
-#             if block.type == "tool_use":
-#                 fn = TOOL_FUNCTIONS.get(block.name)
-#                 result = await fn(**block.input) if fn else "Tool not found"
-#                 tool_results.append({
-#                     "type": "tool_result",
-#                     "tool_use_id": block.id,
-#                     "content": result,
-#                 })
-#
-#         messages.append({"role": "assistant", "content": response.content})
-#         messages.append({"role": "user", "content": tool_results})
-#
-#         response = client.messages.create(
-#             model="claude-sonnet-4-20250514",
-#             max_tokens=4096,
-#             system=[{
-#                 "type": "text",
-#                 "text": SYSTEM_PROMPT.format(
-#                     facts=memory.get_facts_summary(), history=""
-#                 ),
-#                 "cache_control": {"type": "ephemeral"},
-#             }],
-#             tools=[
-#                 {
-#                     "name": s["name"],
-#                     "description": s["description"],
-#                     "input_schema": s["parameters"],
-#                 }
-#                 for s in TOOLS_SCHEMA
-#             ],
-#             messages=messages,
-#         )
-#
-#     # Extrair texto final
-#     final = next(
-#         (b.text for b in response.content if b.type == "text"), ""
-#     )
-#     memory.add_message("assistant", final)
-#     return final
