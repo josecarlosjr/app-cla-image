@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api, Article, Pattern } from "../api";
 
 const CATEGORIES = [
@@ -17,27 +17,65 @@ export default function News() {
   const [patterns, setPatterns] = useState<Pattern[]>([]);
   const [category, setCategory] = useState("");
   const [tab, setTab] = useState<"articles" | "patterns">("patterns");
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState("");
+
+  const loadData = useCallback(async () => {
+    const [n, p] = await Promise.all([
+      api.get<{ articles: Article[] }>("/news", {
+        params: category ? { category } : {},
+      }),
+      api.get<{ patterns: Pattern[] }>("/patterns"),
+    ]);
+    setArticles(n.data.articles || []);
+    setPatterns((p.data.patterns || []).reverse());
+  }, [category]);
 
   useEffect(() => {
-    (async () => {
-      const [n, p] = await Promise.all([
-        api.get<{ articles: Article[] }>("/news", {
-          params: category ? { category } : {},
-        }),
-        api.get<{ patterns: Pattern[] }>("/patterns"),
-      ]);
-      setArticles(n.data.articles || []);
-      setPatterns((p.data.patterns || []).reverse());
-    })();
-  }, [category]);
+    loadData();
+  }, [loadData]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setRefreshResult("");
+    try {
+      const { data } = await api.post<{
+        new_articles: number;
+        total_cached: number;
+        scored: number;
+      }>("/feeds/refresh");
+      setRefreshResult(
+        `${data.new_articles} novos artigos, ${data.scored} com score`
+      );
+      await loadData();
+    } catch {
+      setRefreshResult("Erro ao actualizar feeds");
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold">News & Patterns</h1>
-        <p className="text-slate-400 mt-1">
-          Feeds RSS + padroes detectados por correlacao multi-fonte
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">News & Patterns</h1>
+          <p className="text-slate-400 mt-1">
+            Feeds RSS + padroes detectados por correlacao multi-fonte
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {refreshResult && (
+            <span className="text-xs text-slate-400">{refreshResult}</span>
+          )}
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="px-4 py-2 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 rounded-lg text-sm font-medium transition"
+          >
+            {refreshing ? "A actualizar..." : "Actualizar feeds"}
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-2 border-b border-slate-800">
@@ -122,6 +160,12 @@ export default function News() {
               )}
             </div>
           ))}
+          {patterns.length === 0 && (
+            <p className="text-slate-500">
+              Nenhum padrao detectado. Clica "Actualizar feeds" para buscar
+              artigos — padroes surgem quando 2+ fontes cobrem o mesmo tema.
+            </p>
+          )}
         </div>
       ) : (
         <>
@@ -175,6 +219,12 @@ export default function News() {
                 </p>
               </a>
             ))}
+            {articles.length === 0 && (
+              <p className="text-slate-500">
+                Nenhum artigo ainda. Clica "Actualizar feeds" para buscar
+                artigos de 25+ fontes RSS.
+              </p>
+            )}
           </div>
         </>
       )}
