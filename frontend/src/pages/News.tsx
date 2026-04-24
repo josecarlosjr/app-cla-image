@@ -19,6 +19,8 @@ export default function News() {
   const [tab, setTab] = useState<"articles" | "patterns">("patterns");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshResult, setRefreshResult] = useState("");
+  const [detecting, setDetecting] = useState(false);
+  const [detectResult, setDetectResult] = useState("");
 
   const loadData = useCallback(async () => {
     const [n, p] = await Promise.all([
@@ -55,6 +57,33 @@ export default function News() {
     }
   };
 
+  const handleDetect = async () => {
+    setDetecting(true);
+    setDetectResult("");
+    try {
+      const { data } = await api.post<{
+        new_patterns: number;
+        total_patterns: number;
+        clusters: number;
+        strong_clusters: number;
+        articles: number;
+        message?: string;
+      }>("/patterns/detect");
+      if (data.message) {
+        setDetectResult(data.message);
+      } else {
+        setDetectResult(
+          `${data.new_patterns} novos padroes (${data.strong_clusters} clusters fortes)`
+        );
+      }
+      await loadData();
+    } catch {
+      setDetectResult("Erro ao detectar padroes");
+    } finally {
+      setDetecting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -64,17 +93,32 @@ export default function News() {
             Feeds RSS + padroes detectados por correlacao multi-fonte
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          {refreshResult && (
-            <span className="text-xs text-slate-400">{refreshResult}</span>
-          )}
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="px-4 py-2 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 rounded-lg text-sm font-medium transition"
-          >
-            {refreshing ? "A actualizar..." : "Actualizar feeds"}
-          </button>
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex items-center gap-2">
+            {refreshResult && (
+              <span className="text-xs text-slate-400">{refreshResult}</span>
+            )}
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="px-4 py-2 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 rounded-lg text-sm font-medium transition"
+            >
+              {refreshing ? "A actualizar..." : "Actualizar feeds"}
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            {detectResult && (
+              <span className="text-xs text-slate-400">{detectResult}</span>
+            )}
+            <button
+              onClick={handleDetect}
+              disabled={detecting || refreshing}
+              className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded-lg text-sm font-medium transition"
+              title="Usa Claude API (~$0.04 por deteccao)"
+            >
+              {detecting ? "A detectar..." : "Detectar padroes (~$0.04)"}
+            </button>
+          </div>
         </div>
       </div>
 

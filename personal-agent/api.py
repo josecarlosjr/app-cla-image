@@ -224,6 +224,28 @@ async def refresh_feeds():
 
 
 # ---------------------------------------------------------------------------
+# POST /api/patterns/detect — on-demand pattern detection (uses LLM)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/patterns/detect")
+async def detect_patterns():
+    from pattern_matcher import detect_patterns_on_demand
+    from trend_scorer import calculate_connections, _load_patterns
+    result = await detect_patterns_on_demand()
+
+    if result.get("new_patterns", 0) > 0:
+        patterns = _load_patterns()
+        connections = calculate_connections(patterns)
+        scores = _read_json("trend_scores.json")
+        if isinstance(scores, dict):
+            scores["connections"] = connections
+            scores["updated_at"] = datetime.now().isoformat()
+            _write_json("trend_scores.json", scores)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # GET /api/crypto/trending — crypto scanner results
 # ---------------------------------------------------------------------------
 

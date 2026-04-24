@@ -260,6 +260,60 @@ async def search_patterns(topic: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# On-demand detection (called from API, no Telegram alerts)
+# ---------------------------------------------------------------------------
+
+async def detect_patterns_on_demand() -> dict:
+    fm = FeedManager()
+    articles = fm.get_all_cached()
+
+    if len(articles) < 5:
+        return {"new_patterns": 0, "clusters": 0, "articles": len(articles),
+                "message": f"Poucos artigos ({len(articles)}). Clica 'Actualizar feeds' primeiro."}
+
+    for article in articles:
+        article["_categories"] = _classify_article(article)
+
+    clusters = _cluster_articles(articles)
+    strong = [c for c in clusters if _is_strong_pattern(c)]
+
+    patterns = _load_patterns()
+    existing_titles = {
+        a.get("title", "")
+        for p in patterns
+        for a in p.get("articles", [])
+    }
+
+    new_count = 0
+    for cluster in strong[:5]:
+        cluster_titles = {a.get("title", "") for a in cluster}
+        if cluster_titles & existing_titles:
+            continue
+
+        all_cats: set[str] = set()
+        for a in cluster:
+            all_cats.update(a.get("_categories", []))
+        all_cats.discard("other")
+        categories = sorted(all_cats) if all_cats else ["general"]
+
+        pattern = await _analyze_pattern(cluster, categories)
+        if not pattern:
+            continue
+
+        patterns.append(pattern)
+        new_count += 1
+
+    _save_patterns(patterns)
+    return {
+        "new_patterns": new_count,
+        "total_patterns": len(patterns),
+        "clusters": len(clusters),
+        "strong_clusters": len(strong),
+        "articles": len(articles),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main CronJob entry point
 # ---------------------------------------------------------------------------
 
@@ -282,7 +336,7 @@ async def main():
     logger.info("Found %d clusters.", len(clusters))
 
     strong = [c for c in clusters if _is_strong_pattern(c)]
-    logger.info("Strong patterns (3+ sources): %d", len(strong))
+    logger.info("Strong patterns (2+ sources): %d", len(strong))
 
     patterns = _load_patterns()
     new_count = 0
