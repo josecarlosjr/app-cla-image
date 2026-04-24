@@ -191,6 +191,39 @@ async def get_alerts():
 
 
 # ---------------------------------------------------------------------------
+# POST /api/feeds/refresh — on-demand feed fetch + scoring
+# ---------------------------------------------------------------------------
+
+@app.post("/api/feeds/refresh")
+async def refresh_feeds():
+    from feeds import FeedManager
+    from trend_scorer import calculate_scores, calculate_connections, _load_patterns
+    from relevance_filter import score_articles, save_scored
+
+    fm = FeedManager()
+    new_articles = await fm.fetch_all()
+    all_articles = fm.get_all_cached()
+
+    scores = calculate_scores(all_articles)
+    patterns = _load_patterns()
+    connections = calculate_connections(patterns)
+
+    output = dict(scores)
+    output["connections"] = connections
+    output["updated_at"] = datetime.now().isoformat()
+    _write_json("trend_scores.json", output)
+
+    scored = score_articles(all_articles, patterns)
+    save_scored(scored)
+
+    return {
+        "new_articles": len(new_articles),
+        "total_cached": len(all_articles),
+        "scored": len(scored),
+    }
+
+
+# ---------------------------------------------------------------------------
 # GET /api/crypto/trending — crypto scanner results
 # ---------------------------------------------------------------------------
 
