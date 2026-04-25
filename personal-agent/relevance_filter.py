@@ -1,12 +1,12 @@
 """Relevance filter — cross-source scoring for dashboard articles.
 
 Scores each article based on:
-1. Pattern match: TF-IDF similarity with detected patterns
-2. Cross-source match: TF-IDF similarity with articles from other sources
+1. Pattern match: semantic similarity with detected patterns
+2. Cross-source match: semantic similarity with articles from other sources
 3. User interest match: keyword overlap with user facts
 
-Trusted sources (IEEE, ACM, Science Direct, Inovacao Tecnologica) get a
-score bonus but must still match at least one topic keyword.
+Uses Voyage AI semantic embeddings when VOYAGE_API_KEY is set.
+Falls back to TF-IDF (lexical) otherwise.
 """
 
 import os
@@ -15,8 +15,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+
+from embeddings import embed_texts, cosine_similarity
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
@@ -77,15 +77,15 @@ def _extract_fact_keywords(facts: list[str]) -> set[str]:
     return keywords
 
 
-def score_articles(
+async def score_articles(
     articles: list[dict],
     patterns: list[dict],
     user_facts: list[str] | None = None,
 ) -> list[dict]:
     """Score and filter articles by cross-source relevance.
 
+    Uses semantic embeddings (Voyage AI) when available, TF-IDF fallback.
     Returns scored articles sorted by relevance_score DESC.
-    Trusted sources always pass regardless of score.
     """
     if not articles:
         return []
@@ -104,28 +104,21 @@ def score_articles(
     if len(all_texts) < 2:
         return _fallback_score(articles, fact_keywords)
 
-    try:
-        vectorizer = TfidfVectorizer(
-            max_features=5000,
-            stop_words="english",
-            min_df=1,
-            max_df=0.95,
-        )
-        tfidf = vectorizer.fit_transform(all_texts)
-    except ValueError:
+    embs, is_semantic = await embed_texts(all_texts)
+    if embs.size == 0:
         return _fallback_score(articles, fact_keywords)
 
     n_articles = len(articles)
-    article_vectors = tfidf[:n_articles]
-    pattern_vectors = tfidf[n_articles:]
+    article_embs = embs[:n_articles]
 
-    if pattern_vectors.shape[0] > 0:
-        p_sims = cosine_similarity(article_vectors, pattern_vectors)
+    if pattern_texts:
+        pattern_embs = embs[n_articles:]
+        p_sims = cosine_similarity(article_embs, pattern_embs)
         max_pattern_sim = np.asarray(p_sims.max(axis=1)).flatten()
     else:
         max_pattern_sim = np.zeros(n_articles)
 
-    a_sims = cosine_similarity(article_vectors)
+    a_sims = cosine_similarity(article_embs)
 
     scored: list[dict] = []
     for i, article in enumerate(articles):

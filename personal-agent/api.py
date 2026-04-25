@@ -213,7 +213,7 @@ async def refresh_feeds():
     output["updated_at"] = datetime.now().isoformat()
     _write_json("trend_scores.json", output)
 
-    scored = score_articles(all_articles, patterns)
+    scored = await score_articles(all_articles, patterns)
     save_scored(scored)
 
     return {
