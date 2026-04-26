@@ -1,12 +1,15 @@
 """Relevance filter — cross-source scoring for dashboard articles.
 
 Scores each article based on:
-1. Pattern match: semantic similarity with detected patterns
-2. Cross-source match: semantic similarity with articles from other sources
-3. User interest match: keyword overlap with user facts
+1. Pattern match: semantic similarity with detected patterns (0-35)
+2. Cross-source semantic match: similarity with articles from other sources (0-20)
+3. Cross-source entity/topic overlap: shared entities/topics from Haiku enrichment (0-10)
+4. User interest match: keyword overlap with user facts (0-25)
+5. Base: 10
 
 Uses Voyage AI semantic embeddings when VOYAGE_API_KEY is set.
-Falls back to TF-IDF (lexical) otherwise.
+Falls back to TF-IDF (lexical) when Voyage is unavailable; entity/topic
+component runs only when semantic embeddings are available.
 """
 
 import os
@@ -17,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 
 from embeddings import embed_texts, cosine_similarity
+from enrichment import enrich_articles, entity_topic_score
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
@@ -55,6 +59,7 @@ TOPIC_KEYWORDS = {
 RELEVANCE_THRESHOLD = 15
 MAX_SCORED = 500
 SCORED_RETENTION_DAYS = 7
+ENRICH_MAX_NEW_PER_RUN = 30
 
 
 def _load_user_facts() -> list[str]:
@@ -120,6 +125,9 @@ async def score_articles(
 
     a_sims = cosine_similarity(article_embs)
 
+    if is_semantic:
+        await enrich_articles(articles, max_new=ENRICH_MAX_NEW_PER_RUN)
+
     scored: list[dict] = []
     for i, article in enumerate(articles):
         source = article.get("source", "")
@@ -129,20 +137,32 @@ async def score_articles(
         on_topic = any(kw in text_lower for kw in TOPIC_KEYWORDS)
         trusted = is_trusted_source and on_topic
 
-        # Pattern match component (0-40)
-        p_score = 40 * float(max_pattern_sim[i])
+        # Pattern match component (0-35)
+        p_score = 35 * float(max_pattern_sim[i])
 
-        # Cross-source component (0-25)
-        cross_vals = []
+        # Cross-source semantic component (0-20)
+        cross_vals: list[float] = []
+        entity_vals: list[float] = []
         for j in range(n_articles):
-            if i != j and articles[j].get("source", "") != source:
-                cross_vals.append(float(a_sims[i][j]))
+            if i == j or articles[j].get("source", "") == source:
+                continue
+            cross_vals.append(float(a_sims[i][j]))
+            entity_vals.append(entity_topic_score(article, articles[j]))
+
         if cross_vals:
             cross_vals.sort(reverse=True)
             top5 = cross_vals[:5]
-            c_score = 25 * (sum(top5) / len(top5))
+            c_score = 20 * (sum(top5) / len(top5))
         else:
             c_score = 0
+
+        # Cross-source entity/topic component (0-10)
+        if entity_vals:
+            entity_vals.sort(reverse=True)
+            top3 = entity_vals[:3]
+            e_score = 10 * (sum(top3) / len(top3))
+        else:
+            e_score = 0
 
         # User interest component (0-25)
         if fact_keywords:
@@ -152,7 +172,7 @@ async def score_articles(
         else:
             f_score = 0
 
-        raw = 10 + p_score + c_score + f_score
+        raw = 10 + p_score + c_score + e_score + f_score
         relevance = min(100, int(raw))
 
         if trusted:
