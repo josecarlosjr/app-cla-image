@@ -17,12 +17,13 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+import database as db
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 STATE_FILE = os.path.join(DATA_DIR, "notifications_state.json")
 MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
 JOBS_FILE = os.path.join(DATA_DIR, "jobs_tracker.json")
 NOTES_DIR = os.path.join(DATA_DIR, "notes")
-PATTERNS_FILE = os.path.join(DATA_DIR, "patterns.json")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -159,9 +160,7 @@ def _check_todo_notes(state: dict) -> list[str]:
 
 
 def _check_high_confidence_patterns(state: dict, user_facts: list[str]) -> list[str]:
-    patterns = _load_json(PATTERNS_FILE, [])
-    if not isinstance(patterns, list):
-        return []
+    patterns = db.get_patterns()
 
     user_interest_keywords = set()
     for fact in user_facts:

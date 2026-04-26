@@ -1,16 +1,16 @@
 import os
-import json
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
 from feeds import FeedManager, get_source_weight
 from relevance_filter import score_articles, save_scored
+from database import (
+    get_trend_scores_data, save_trend_scores,
+    get_patterns as db_get_patterns,
+)
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-SCORES_FILE = os.path.join(DATA_DIR, "trend_scores.json")
-PATTERNS_FILE = os.path.join(DATA_DIR, "patterns.json")
-FEEDS_CACHE = os.path.join(DATA_DIR, "feeds_cache.json")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -83,17 +83,7 @@ def _classify(article: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _load_previous_scores() -> dict:
-    if os.path.exists(SCORES_FILE):
-        with open(SCORES_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-
-def _load_patterns() -> list[dict]:
-    if os.path.exists(PATTERNS_FILE):
-        with open(PATTERNS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
+    return get_trend_scores_data() or {}
 
 
 # ---------------------------------------------------------------------------
@@ -188,10 +178,8 @@ def calculate_connections(patterns: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_trend_scores() -> str:
-    if os.path.exists(SCORES_FILE):
-        with open(SCORES_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
+    data = get_trend_scores_data()
+    if data:
         lines = ["*Trend Scores (0-100):*\n"]
         for cat in CATEGORY_KEYWORDS:
             info = data.get(cat, {})
@@ -227,15 +215,14 @@ async def main():
 
     scores = calculate_scores(articles)
 
-    patterns = _load_patterns()
+    patterns = db_get_patterns()
     connections = calculate_connections(patterns)
 
     output = dict(scores)
     output["connections"] = connections
     output["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-    with open(SCORES_FILE, "w", encoding="utf-8") as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
+    save_trend_scores(output)
 
     logger.info("Trend scores saved:")
     for cat, data in scores.items():

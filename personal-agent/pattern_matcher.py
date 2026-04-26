@@ -8,11 +8,13 @@ import httpx
 
 from feeds import FeedManager
 from llm import generate_text
-from embeddings import embed_texts, cosine_similarity
+from embeddings import embed_texts_cached, cosine_similarity
 from enrichment import enrich_articles, entity_topic_score
+from database import (
+    insert_pattern, get_patterns, get_pattern_article_titles, prune_patterns,
+)
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-PATTERNS_FILE = os.path.join(DATA_DIR, "patterns.json")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -80,22 +82,6 @@ CATEGORY_KEYWORDS = {
 
 
 # ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
-
-def _load_patterns() -> list[dict]:
-    if os.path.exists(PATTERNS_FILE):
-        with open(PATTERNS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
-
-
-def _save_patterns(patterns: list[dict]):
-    with open(PATTERNS_FILE, "w", encoding="utf-8") as f:
-        json.dump(patterns[-MAX_PATTERNS_STORED:], f, indent=2, ensure_ascii=False)
-
-
-# ---------------------------------------------------------------------------
 # Telegram sender
 # ---------------------------------------------------------------------------
 
@@ -138,8 +124,9 @@ async def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
     texts = [
         f"{a.get('title', '')} {a.get('summary', '')}" for a in articles
     ]
+    urls = [a.get("url") for a in articles]
 
-    embs, is_semantic = await embed_texts(texts)
+    embs, is_semantic = await embed_texts_cached(texts, urls)
     if embs.size == 0:
         return []
 
@@ -240,7 +227,7 @@ async def _analyze_pattern(cluster: list[dict], categories: list[str]) -> dict |
 # ---------------------------------------------------------------------------
 
 async def search_patterns(topic: str = "") -> str:
-    patterns = _load_patterns()
+    patterns = get_patterns()
     if not patterns:
         return "Nenhum padrao identificado ainda."
 
@@ -255,7 +242,7 @@ async def search_patterns(topic: str = "") -> str:
         return f"Nenhum padrao encontrado para '{topic}'."
 
     lines = []
-    for p in patterns[-5:]:
+    for p in patterns[:5]:
         conf = p.get("confidence", "?")
         cats = ", ".join(p.get("categories", []))
         n = p.get("num_sources", 0)
@@ -284,12 +271,7 @@ async def detect_patterns_on_demand() -> dict:
     clusters = await _cluster_articles(articles)
     strong = [c for c in clusters if _is_strong_pattern(c)]
 
-    patterns = _load_patterns()
-    existing_titles = {
-        a.get("title", "")
-        for p in patterns
-        for a in p.get("articles", [])
-    }
+    existing_titles = get_pattern_article_titles()
 
     new_count = 0
     for cluster in strong[:5]:
@@ -307,13 +289,14 @@ async def detect_patterns_on_demand() -> dict:
         if not pattern:
             continue
 
-        patterns.append(pattern)
+        insert_pattern(pattern)
         new_count += 1
 
-    _save_patterns(patterns)
+    prune_patterns(MAX_PATTERNS_STORED)
+    total = len(get_patterns())
     return {
         "new_patterns": new_count,
-        "total_patterns": len(patterns),
+        "total_patterns": total,
         "clusters": len(clusters),
         "strong_clusters": len(strong),
         "articles": len(articles),
@@ -345,7 +328,6 @@ async def main():
     strong = [c for c in clusters if _is_strong_pattern(c)]
     logger.info("Strong patterns (2+ sources): %d", len(strong))
 
-    patterns = _load_patterns()
     new_count = 0
 
     for cluster in strong[:5]:
@@ -359,7 +341,7 @@ async def main():
         if not pattern:
             continue
 
-        patterns.append(pattern)
+        insert_pattern(pattern)
         new_count += 1
 
         if pattern["confidence"] == "ALTA":
@@ -373,7 +355,7 @@ async def main():
             await _send_telegram(message)
             logger.info("High-confidence pattern alert sent.")
 
-    _save_patterns(patterns)
+    prune_patterns(MAX_PATTERNS_STORED)
     logger.info("Pattern matcher done. %d new patterns.", new_count)
 
 
