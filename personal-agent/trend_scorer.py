@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -217,7 +218,7 @@ def get_trend_scores() -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def main():
+async def main():
     logger.info("Trend scorer starting...")
 
     fm = FeedManager()
@@ -242,10 +243,10 @@ def main():
                      cat, data["score"], data["trend"], data["articles"])
     logger.info("Connections: %d", len(connections))
 
-    scored = score_articles(articles, patterns)
+    scored = await score_articles(articles, patterns)
     save_scored(scored)
     logger.info("Relevance filter: %d articles passed threshold.", len(scored))
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

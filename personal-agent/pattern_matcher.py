@@ -5,11 +5,11 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
 from feeds import FeedManager
 from llm import generate_text
+from embeddings import embed_texts, cosine_similarity
+from enrichment import enrich_articles, entity_topic_score
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 PATTERNS_FILE = os.path.join(DATA_DIR, "patterns.json")
@@ -31,8 +31,12 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
 
 MAX_PATTERNS_STORED = 100
-SIMILARITY_THRESHOLD = 0.3
+TFIDF_SIMILARITY_THRESHOLD = 0.3
+SEMANTIC_SIMILARITY_THRESHOLD = 0.5
+SEMANTIC_BOOSTED_THRESHOLD = 0.35
+ENTITY_TOPIC_FLOOR = 0.3
 MIN_SOURCES_FOR_STRONG = 2
+ENRICH_MAX_NEW_PER_RUN = 50
 
 CATEGORIES = [
     "chips_ia", "energia", "minerais", "geopolitica",
@@ -124,10 +128,10 @@ def _classify_article(article: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# TF-IDF clustering
+# Semantic clustering (Voyage AI with TF-IDF fallback)
 # ---------------------------------------------------------------------------
 
-def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
+async def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
     if len(articles) < 3:
         return []
 
@@ -135,17 +139,24 @@ def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
         f"{a.get('title', '')} {a.get('summary', '')}" for a in articles
     ]
 
-    try:
-        vectorizer = TfidfVectorizer(
-            max_features=5000,
-            stop_words="english",
-            min_df=1,
-            max_df=0.95,
-        )
-        tfidf = vectorizer.fit_transform(texts)
-        sim_matrix = cosine_similarity(tfidf)
-    except ValueError:
+    embs, is_semantic = await embed_texts(texts)
+    if embs.size == 0:
         return []
+
+    sim_matrix = cosine_similarity(embs)
+
+    if is_semantic:
+        await enrich_articles(articles, max_new=ENRICH_MAX_NEW_PER_RUN)
+
+    base_threshold = SEMANTIC_SIMILARITY_THRESHOLD if is_semantic else TFIDF_SIMILARITY_THRESHOLD
+
+    def is_similar(i: int, j: int) -> bool:
+        sem = float(sim_matrix[i][j])
+        if sem >= base_threshold:
+            return True
+        if is_semantic and sem >= SEMANTIC_BOOSTED_THRESHOLD:
+            return entity_topic_score(articles[i], articles[j]) >= ENTITY_TOPIC_FLOOR
+        return False
 
     n = len(articles)
     assigned = [False] * n
@@ -157,17 +168,13 @@ def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
         cluster = [i]
         assigned[i] = True
         for j in range(i + 1, n):
-            if not assigned[j] and sim_matrix[i][j] >= SIMILARITY_THRESHOLD:
+            if not assigned[j] and is_similar(i, j):
                 cluster.append(j)
                 assigned[j] = True
         if len(cluster) >= 2:
             clusters.append(cluster)
 
-    article_clusters = []
-    for idx_list in clusters:
-        article_clusters.append([articles[i] for i in idx_list])
-
-    return article_clusters
+    return [[articles[i] for i in idx_list] for idx_list in clusters]
 
 
 def _is_strong_pattern(cluster: list[dict]) -> bool:
@@ -274,7 +281,7 @@ async def detect_patterns_on_demand() -> dict:
     for article in articles:
         article["_categories"] = _classify_article(article)
 
-    clusters = _cluster_articles(articles)
+    clusters = await _cluster_articles(articles)
     strong = [c for c in clusters if _is_strong_pattern(c)]
 
     patterns = _load_patterns()
@@ -332,7 +339,7 @@ async def main():
         article["_categories"] = _classify_article(article)
 
     logger.info("Clustering %d articles...", len(articles))
-    clusters = _cluster_articles(articles)
+    clusters = await _cluster_articles(articles)
     logger.info("Found %d clusters.", len(clusters))
 
     strong = [c for c in clusters if _is_strong_pattern(c)]
