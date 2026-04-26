@@ -5,21 +5,18 @@ can combine semantic similarity with explicit entity/topic overlap. Helps
 disambiguate articles that look semantically similar but are about different
 companies, products, or places.
 
-Cached by URL in enriched_articles.json — each article is enriched at most
-once. Run-level cap (max_new) controls cost per invocation.
+Cached by URL in SQLite — each article is enriched at most once.
+Run-level cap (max_new) controls cost per invocation.
 """
 
-import os
-import json
 import asyncio
 import logging
 
 from llm import generate_json, MODEL_HAIKU
+from database import get_enrichments_batch, save_enrichment, prune_enrichments
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.getenv("DATA_DIR", "/data")
-ENRICHED_FILE = os.path.join(DATA_DIR, "enriched_articles.json")
 MAX_CACHE_ENTRIES = 5000
 
 ENRICHMENT_SCHEMA = {
@@ -89,22 +86,6 @@ async def _enrich_one(article: dict) -> dict | None:
     }
 
 
-def _load_cache() -> dict[str, dict]:
-    if os.path.exists(ENRICHED_FILE):
-        try:
-            with open(ENRICHED_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, OSError):
-            return {}
-    return {}
-
-
-def _save_cache(cache: dict[str, dict]):
-    with open(ENRICHED_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=2, ensure_ascii=False)
-
-
 async def enrich_articles(
     articles: list[dict],
     max_new: int = 30,
@@ -112,19 +93,18 @@ async def enrich_articles(
 ) -> None:
     """Add `_entities` and `_topics` fields in-place to each article.
 
-    Uses URL-keyed cache. Articles already in cache are hydrated for free.
-    Articles not in cache are enriched via Haiku, capped at max_new per call.
-    Articles beyond the cap get empty lists this run; they'll be enriched
-    on a future run.
+    Uses SQLite-backed URL-keyed cache. Articles already cached are hydrated
+    for free. New articles are enriched via Haiku, capped at max_new per call.
     """
-    cache = _load_cache()
+    urls = [a.get("url", "") for a in articles if a.get("url")]
+    cached = get_enrichments_batch(urls)
 
     needs: list[dict] = []
     for article in articles:
         url = article.get("url", "")
-        if url and url in cache:
-            article["_entities"] = cache[url].get("entities", [])
-            article["_topics"] = cache[url].get("topics", [])
+        if url and url in cached:
+            article["_entities"] = cached[url]["entities"]
+            article["_topics"] = cached[url]["topics"]
         else:
             article["_entities"] = []
             article["_topics"] = []
@@ -145,21 +125,18 @@ async def enrich_articles(
         async with sem:
             result = await _enrich_one(article)
             if result:
-                cache[article["url"]] = result
+                save_enrichment(article["url"], result["entities"], result["topics"])
                 article["_entities"] = result["entities"]
                 article["_topics"] = result["topics"]
 
     await asyncio.gather(*[_worker(a) for a in to_enrich])
+    prune_enrichments(MAX_CACHE_ENTRIES)
 
-    if len(cache) > MAX_CACHE_ENTRIES:
-        cache = dict(list(cache.items())[-(MAX_CACHE_ENTRIES - 1000):])
-
-    _save_cache(cache)
-    cached = len(articles) - len(needs)
+    cached_count = len(articles) - len(needs)
     deferred = max(0, len(needs) - max_new)
     logger.info(
         "Enrichment: %d cached, %d enriched, %d deferred to next run",
-        cached, len(to_enrich), deferred,
+        cached_count, len(to_enrich), deferred,
     )
 
 

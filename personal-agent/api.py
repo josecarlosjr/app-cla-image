@@ -9,6 +9,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import database as db
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
 
@@ -197,7 +199,7 @@ async def get_alerts():
 @app.post("/api/feeds/refresh")
 async def refresh_feeds():
     from feeds import FeedManager
-    from trend_scorer import calculate_scores, calculate_connections, _load_patterns
+    from trend_scorer import calculate_scores, calculate_connections
     from relevance_filter import score_articles, save_scored
 
     fm = FeedManager()
@@ -205,13 +207,13 @@ async def refresh_feeds():
     all_articles = fm.get_all_cached()
 
     scores = calculate_scores(all_articles)
-    patterns = _load_patterns()
+    patterns = db.get_patterns()
     connections = calculate_connections(patterns)
 
     output = dict(scores)
     output["connections"] = connections
     output["updated_at"] = datetime.now().isoformat()
-    _write_json("trend_scores.json", output)
+    db.save_trend_scores(output)
 
     scored = await score_articles(all_articles, patterns)
     save_scored(scored)
@@ -230,17 +232,16 @@ async def refresh_feeds():
 @app.post("/api/patterns/detect")
 async def detect_patterns():
     from pattern_matcher import detect_patterns_on_demand
-    from trend_scorer import calculate_connections, _load_patterns
+    from trend_scorer import calculate_connections
     result = await detect_patterns_on_demand()
 
     if result.get("new_patterns", 0) > 0:
-        patterns = _load_patterns()
+        patterns = db.get_patterns()
         connections = calculate_connections(patterns)
-        scores = _read_json("trend_scores.json")
-        if isinstance(scores, dict):
-            scores["connections"] = connections
-            scores["updated_at"] = datetime.now().isoformat()
-            _write_json("trend_scores.json", scores)
+        scores = db.get_trend_scores_data() or {}
+        scores["connections"] = connections
+        scores["updated_at"] = datetime.now().isoformat()
+        db.save_trend_scores(scores)
 
     return result
 
@@ -263,15 +264,9 @@ async def get_crypto_trending():
 
 @app.get("/api/news")
 async def get_news(category: str = Query("", description="Filter by category")):
-    scored = _read_json("feeds_scored.json")
-    if isinstance(scored, list) and scored:
-        articles = scored
-    else:
-        articles = _read_json("feeds_cache.json")
-        if not isinstance(articles, list):
-            articles = []
-    if category:
-        articles = [a for a in articles if a.get("category") == category]
+    articles = db.get_articles(scored_only=True, category=category or "")
+    if not articles:
+        articles = db.get_articles(category=category or "")
     return {"articles": articles[:100], "total": len(articles)}
 
 
@@ -296,12 +291,8 @@ async def get_news_analysis():
 
 @app.get("/api/patterns")
 async def get_patterns(confidence: str = Query("", description="ALTA, MEDIA, BAIXA")):
-    patterns = _read_json("patterns.json")
-    if not isinstance(patterns, list):
-        patterns = []
-    if confidence:
-        patterns = [p for p in patterns if p.get("confidence") == confidence.upper()]
-    return {"patterns": patterns[-20:], "total": len(patterns)}
+    patterns = db.get_patterns(confidence=confidence)
+    return {"patterns": patterns[:20], "total": len(patterns)}
 
 
 # ---------------------------------------------------------------------------
@@ -310,8 +301,8 @@ async def get_patterns(confidence: str = Query("", description="ALTA, MEDIA, BAI
 
 @app.get("/api/trends")
 async def get_trends():
-    scores = _read_json("trend_scores.json")
-    if isinstance(scores, dict):
+    scores = db.get_trend_scores_data()
+    if scores:
         return scores
     return {"updated_at": None}
 
@@ -322,8 +313,8 @@ async def get_trends():
 
 @app.get("/api/map/nodes")
 async def get_map_nodes():
-    scores = _read_json("trend_scores.json")
-    if not isinstance(scores, dict):
+    scores = db.get_trend_scores_data()
+    if not scores:
         return {"nodes": [], "connections": []}
 
     nodes = []

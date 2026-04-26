@@ -1,14 +1,14 @@
 import os
-import json
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from xml.etree import ElementTree
 
 import httpx
 
+from database import upsert_articles, get_articles, prune_articles
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-CACHE_FILE = os.path.join(DATA_DIR, "feeds_cache.json")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
 MAX_CACHED = 2000
 
@@ -156,25 +156,8 @@ def _strip_html(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 class FeedManager:
-    def __init__(self):
-        self.cache = self._load_cache()
-
-    def _load_cache(self) -> list[dict]:
-        if os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return []
-
-    def _save_cache(self):
-        self.cache = self.cache[-MAX_CACHED:]
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.cache, f, indent=2, ensure_ascii=False)
-
     async def fetch_all(self) -> list[dict]:
-        new_articles: list[dict] = []
-        seen_titles: set[str] = {
-            a["title"].lower().strip() for a in self.cache
-        }
+        all_fetched: list[dict] = []
 
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             tasks = []
@@ -189,17 +172,13 @@ class FeedManager:
             if isinstance(result, Exception):
                 logger.error("Feed fetch error: %s", result)
                 continue
-            for article in result:
-                norm = article["title"].lower().strip()
-                if norm not in seen_titles:
-                    seen_titles.add(norm)
-                    new_articles.append(article)
+            all_fetched.extend(result)
 
-        self.cache.extend(new_articles)
-        self._save_cache()
+        new_articles = upsert_articles(all_fetched)
+        prune_articles(MAX_CACHED)
         logger.info(
-            "Feeds fetched: %d new articles, %d total cached.",
-            len(new_articles), len(self.cache),
+            "Feeds fetched: %d new articles, %d total.",
+            len(new_articles), len(all_fetched),
         )
         return new_articles
 
@@ -215,22 +194,13 @@ class FeedManager:
             return []
 
     def get_by_category(self, category: str) -> list[dict]:
-        return [a for a in self.cache if a["category"] == category]
+        return get_articles(category=category)
 
     def get_recent(self, hours: int = 24) -> list[dict]:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        recent = []
-        for a in self.cache:
-            try:
-                fetched = datetime.fromisoformat(a["fetched_at"])
-                if fetched >= cutoff:
-                    recent.append(a)
-            except (ValueError, KeyError):
-                continue
-        return recent
+        return get_articles(hours=hours)
 
     def get_all_cached(self) -> list[dict]:
-        return list(self.cache)
+        return get_articles()
 
 
 # ---------------------------------------------------------------------------

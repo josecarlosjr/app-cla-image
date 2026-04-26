@@ -15,16 +15,15 @@ component runs only when semantic embeddings are available.
 import os
 import json
 import logging
-from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
-from embeddings import embed_texts, cosine_similarity
+from embeddings import embed_texts_cached, cosine_similarity
 from enrichment import enrich_articles, entity_topic_score
+from database import update_article_scores, clear_stale_scores
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
-SCORED_FILE = os.path.join(DATA_DIR, "feeds_scored.json")
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +108,9 @@ async def score_articles(
     if len(all_texts) < 2:
         return _fallback_score(articles, fact_keywords)
 
-    embs, is_semantic = await embed_texts(all_texts)
+    article_urls = [a.get("url") for a in articles]
+    all_urls: list[str | None] = article_urls + [None] * len(pattern_texts)
+    embs, is_semantic = await embed_texts_cached(all_texts, all_urls)
     if embs.size == 0:
         return _fallback_score(articles, fact_keywords)
 
@@ -219,42 +220,6 @@ def _fallback_score(articles: list[dict], fact_keywords: set[str]) -> list[dict]
 
 
 def save_scored(scored: list[dict]):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=SCORED_RETENTION_DAYS)
-
-    existing: list[dict] = []
-    if os.path.exists(SCORED_FILE):
-        try:
-            with open(SCORED_FILE, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            existing = []
-
-    seen_urls: set[str] = set()
-    merged: list[dict] = []
-
-    for article in scored:
-        url = article.get("url", "")
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            merged.append(article)
-
-    for article in existing:
-        url = article.get("url", "")
-        if url and url not in seen_urls:
-            try:
-                fetched = datetime.fromisoformat(article.get("fetched_at", ""))
-                if fetched.tzinfo is None:
-                    fetched = fetched.replace(tzinfo=timezone.utc)
-                if fetched < cutoff:
-                    continue
-            except (ValueError, KeyError):
-                continue
-            seen_urls.add(url)
-            merged.append(article)
-
-    merged.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
-    merged = merged[:MAX_SCORED]
-
-    with open(SCORED_FILE, "w", encoding="utf-8") as f:
-        json.dump(merged, f, indent=2, ensure_ascii=False)
-    logger.info("Relevance filter: %d articles scored (7-day window).", len(merged))
+    update_article_scores(scored)
+    clear_stale_scores(days=SCORED_RETENTION_DAYS)
+    logger.info("Relevance filter: %d articles scored.", len(scored))

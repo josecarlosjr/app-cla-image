@@ -17,15 +17,13 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from llm import generate_text
+import database as db
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
 MEMORY_FILE = os.path.join(DATA_DIR, "memory.json")
 JOBS_FILE = os.path.join(DATA_DIR, "jobs_tracker.json")
-PATTERNS_FILE = os.path.join(DATA_DIR, "patterns.json")
 CRYPTO_FILE = os.path.join(DATA_DIR, "crypto_scan.json")
-FEEDS_FILE = os.path.join(DATA_DIR, "feeds_cache.json")
-TRENDS_FILE = os.path.join(DATA_DIR, "trend_scores.json")
 MONITOR_FILE = os.path.join(DATA_DIR, "monitor_state.json")
 DIGEST_STATE = os.path.join(DATA_DIR, "digest_state.json")
 
@@ -101,10 +99,10 @@ def _filter_recent(items: list, key: str, hours: int) -> list:
 
 def _gather_morning_data() -> dict:
     """Data since last evening (approx last 12h)."""
-    trends = _load_json(TRENDS_FILE, {})
-    patterns = _load_json(PATTERNS_FILE, [])
+    trends = db.get_trend_scores_data() or {}
+    patterns = db.get_patterns()
     cryptos = _load_json(CRYPTO_FILE, [])
-    feeds = _load_json(FEEDS_FILE, [])
+    feeds = db.get_articles(hours=16)
     jobs = _load_json(JOBS_FILE, [])
     monitor = _load_json(MONITOR_FILE, {})
     memory = _load_json(MEMORY_FILE, {"facts": []})
@@ -128,15 +126,12 @@ def _gather_morning_data() -> dict:
 
     return {
         "trends": top_trends[:5],
-        "recent_patterns": _filter_recent(
-            patterns if isinstance(patterns, list) else [],
-            "timestamp", 16,
-        )[:3],
+        "recent_patterns": _filter_recent(patterns, "timestamp", 16)[:3],
         "recent_crypto": _filter_recent(
             cryptos if isinstance(cryptos, list) else [],
             "timestamp", 16,
         )[:5],
-        "top_news": (feeds if isinstance(feeds, list) else [])[-15:],
+        "top_news": feeds[:15],
         "active_jobs_count": len(active_jobs),
         "stale_jobs": [
             j for j in active_jobs
@@ -153,7 +148,7 @@ def _gather_evening_data() -> dict:
         hour=0, minute=0, second=0, microsecond=0
     )
 
-    patterns = _load_json(PATTERNS_FILE, [])
+    patterns = db.get_patterns()
     cryptos = _load_json(CRYPTO_FILE, [])
     memory = _load_json(MEMORY_FILE, {"history": [], "facts": []})
     jobs = _load_json(JOBS_FILE, [])
@@ -170,10 +165,7 @@ def _gather_evening_data() -> dict:
         except (ValueError, KeyError):
             continue
 
-    today_patterns = _filter_recent(
-        patterns if isinstance(patterns, list) else [],
-        "timestamp", 14,
-    )
+    today_patterns = _filter_recent(patterns, "timestamp", 14)
     today_cryptos = _filter_recent(
         cryptos if isinstance(cryptos, list) else [],
         "timestamp", 14,
