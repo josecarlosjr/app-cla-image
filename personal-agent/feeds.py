@@ -10,7 +10,7 @@ from database import upsert_articles, get_articles, prune_articles
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
-MAX_CACHED = 2000
+MAX_CACHED = 3000
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Feed catalogue: 25+ feeds in 6 categories
+# Feed catalogue: 35+ feeds in 8 categories
 # ---------------------------------------------------------------------------
 
 FEEDS = {
@@ -37,14 +37,20 @@ FEEDS = {
         ("Fast Company", "https://www.fastcompany.com/latest/rss"),
         ("The Next Web", "https://thenextweb.com/feed"),
         ("Olhar Digital", "https://olhardigital.com.br/feed/"),
+        ("Hacker News", "https://hnrss.org/frontpage?count=30"),
+        ("Reddit Technology", "https://www.reddit.com/r/technology/hot/.rss"),
     ],
     "CIBERSEGURANCA": [
         ("The Hacker News", "https://feeds.feedburner.com/TheHackersNews"),
         ("Dark Reading", "https://www.darkreading.com/rss.xml"),
+        ("CISA Advisories", "https://www.cisa.gov/cybersecurity-advisories/all.xml"),
+        ("Bleeping Computer", "https://www.bleepingcomputer.com/feed/"),
+        ("arXiv Cybersecurity", "https://rss.arxiv.org/rss/cs.CR"),
     ],
     "CIENCIA_ENERGIA": [
         ("Inovacao Tecnologica", "https://www.inovacaotecnologica.com.br/noticias/rss.xml"),
         ("Science Direct", "https://rss.sciencedirect.com/publication/science/25895346"),
+        ("arXiv AI", "https://rss.arxiv.org/rss/cs.AI"),
     ],
     "GEOPOLITICA_FINANCAS": [
         ("BBC News World", "http://feeds.bbci.co.uk/news/world/rss.xml"),
@@ -65,6 +71,14 @@ FEEDS = {
         ("DevOps.com", "https://devops.com/feed/"),
         ("The New Stack", "https://thenewstack.io/feed/"),
     ],
+    "MERCADOS": [
+        ("CNBC Investing", "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
+        ("MarketWatch", "https://feeds.marketwatch.com/marketwatch/topstories/"),
+        ("Seeking Alpha", "https://seekingalpha.com/feed.xml"),
+        ("Nasdaq", "https://www.nasdaq.com/feed/nasdaq-original/rss.xml"),
+        ("Reddit Stocks", "https://www.reddit.com/r/stocks/hot/.rss"),
+        ("Reddit Investing", "https://www.reddit.com/r/investing/hot/.rss"),
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -79,6 +93,10 @@ SOURCE_WEIGHTS = {
     "SpaceNews": 2, "Ars Technica": 2,
     "G1 Tecnologia": 2, "G1 Mundo": 2,
     "DZone DevOps": 2, "DevOps.com": 2, "The New Stack": 2,
+    "CNBC Investing": 3, "MarketWatch": 3, "Nasdaq": 3,
+    "Seeking Alpha": 2, "Hacker News": 2,
+    "Bleeping Computer": 2, "CISA Advisories": 3,
+    "arXiv AI": 2, "arXiv Cybersecurity": 2,
 }
 DEFAULT_WEIGHT = 1
 
@@ -109,7 +127,7 @@ def _parse_feed_xml(xml_text: str, source: str, category: str) -> list[dict]:
             "url": _text(item, "link"),
             "source": source,
             "category": category,
-            "published": _text(item, "pubDate"),
+            "published": _text(item, "pubDate") or _text(item, "{http://purl.org/dc/elements/1.1/}date"),
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -122,6 +140,8 @@ def _parse_feed_xml(xml_text: str, source: str, category: str) -> list[dict]:
         link_el = entry.find("{http://www.w3.org/2005/Atom}link")
         link = link_el.get("href", "") if link_el is not None else ""
         summary_el = entry.find("{http://www.w3.org/2005/Atom}summary")
+        if summary_el is None:
+            summary_el = entry.find("{http://www.w3.org/2005/Atom}content")
         summary = _strip_html(summary_el.text or "") if summary_el is not None else ""
         pub_el = entry.find("{http://www.w3.org/2005/Atom}updated")
         published = pub_el.text if pub_el is not None else ""
@@ -159,7 +179,10 @@ class FeedManager:
     async def fetch_all(self) -> list[dict]:
         all_fetched: list[dict] = []
 
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        headers = {"User-Agent": "PersonalAgent/1.0 (news-aggregator)"}
+        async with httpx.AsyncClient(
+            timeout=15, follow_redirects=True, headers=headers,
+        ) as client:
             tasks = []
             for category, feeds in FEEDS.items():
                 for source_name, url in feeds:
