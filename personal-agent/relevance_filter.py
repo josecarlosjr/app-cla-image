@@ -32,6 +32,9 @@ TRUSTED_SOURCES = {
     "IEEE Spectrum",
     "Inovacao Tecnologica",
     "Science Direct",
+    "CNBC Investing",
+    "MarketWatch",
+    "Nasdaq",
 }
 
 TOPIC_KEYWORDS = {
@@ -49,7 +52,8 @@ TOPIC_KEYWORDS = {
     "quantum", "superconductor", "material science", "physics",
     "satellite", "hypersonic", "space", "missile", "defense", "orbit",
     "stock", "recession", "inflation", "crypto", "etf", "market",
-    "interest rate",
+    "interest rate", "earnings", "nasdaq", "s&p 500", "dow jones",
+    "trading", "dividend", "wall street", "hedge fund",
     "devops", "kubernetes", "docker", "cloud", "infrastructure",
     "platform", "pipeline", "terraform", "cicd", "ci/cd",
     "5g", "6g", "wireless", "telecom",

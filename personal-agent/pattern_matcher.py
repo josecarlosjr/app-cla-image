@@ -76,7 +76,9 @@ CATEGORY_KEYWORDS = {
     ],
     "financas": [
         "stock", "ecb", "recession", "inflation", "crypto", "etf",
-        "fed", "interest rate", "market", "ipo",
+        "fed", "interest rate", "market", "ipo", "earnings",
+        "nasdaq", "s&p 500", "dow jones", "trading", "dividend",
+        "wall street", "bull market", "bear market", "hedge fund",
     ],
 }
 
