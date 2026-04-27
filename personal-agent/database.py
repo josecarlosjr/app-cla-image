@@ -9,6 +9,7 @@ Tables:
     enrichments — Haiku entity/topic extractions (URL-keyed cache)
     embeddings  — Voyage AI vectors (URL-keyed cache)
     trend_scores — category scores + connections
+    temporal_snapshots — hourly article counts per category (F5a)
 """
 
 import json
@@ -74,6 +75,15 @@ CREATE TABLE IF NOT EXISTS trend_scores (
     data_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS temporal_snapshots (
+    category TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    article_count INTEGER DEFAULT 0,
+    source_count INTEGER DEFAULT 0,
+    PRIMARY KEY (category, bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_temporal_bucket ON temporal_snapshots(bucket);
 """
 
 # ---------------------------------------------------------------------------
@@ -411,6 +421,54 @@ def get_trend_scores_data() -> dict | None:
     if row:
         return json.loads(row["data_json"])
     return None
+
+
+# ---------------------------------------------------------------------------
+# Temporal Snapshots (F5a)
+# ---------------------------------------------------------------------------
+
+def record_temporal_snapshots(stats: list[dict]) -> None:
+    """Upsert hourly article counts per category. Accumulates within same hour."""
+    if not stats:
+        return
+    conn = _db()
+    with conn:
+        for s in stats:
+            conn.execute(
+                """INSERT INTO temporal_snapshots
+                   (category, bucket, article_count, source_count)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(category, bucket) DO UPDATE SET
+                   article_count = article_count + excluded.article_count,
+                   source_count = MAX(source_count, excluded.source_count)""",
+                (s["category"], s["bucket"], s["article_count"], s["source_count"]),
+            )
+
+
+def get_temporal_snapshots(*, category: str = "", hours: int = 168) -> list[dict]:
+    """Get snapshots for the last N hours (default 7 days)."""
+    conn = _db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H")
+    params: list = [cutoff]
+    cat_clause = ""
+    if category:
+        cat_clause = "AND category = ?"
+        params.append(category)
+    rows = conn.execute(
+        f"""SELECT category, bucket, article_count, source_count
+            FROM temporal_snapshots
+            WHERE bucket >= ? {cat_clause}
+            ORDER BY bucket ASC""",
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def prune_temporal_snapshots(days: int = 30) -> None:
+    conn = _db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H")
+    with conn:
+        conn.execute("DELETE FROM temporal_snapshots WHERE bucket < ?", (cutoff,))
 
 
 # ---------------------------------------------------------------------------
