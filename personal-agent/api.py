@@ -335,6 +335,16 @@ async def get_map_nodes():
 
 
 # ---------------------------------------------------------------------------
+# GET /api/temporal — acceleration & divergence detection (F5a)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/temporal")
+async def get_temporal():
+    from temporal import get_temporal_summary
+    return get_temporal_summary()
+
+
+# ---------------------------------------------------------------------------
 # Jobs CRUD
 # ---------------------------------------------------------------------------
 

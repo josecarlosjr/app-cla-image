@@ -45,6 +45,7 @@ COOLDOWN_HOURS = {
     "job_stale": 48,
     "pattern_alta": 12,
     "note_todo": 24,
+    "temporal": 12,
 }
 JOB_STALE_DAYS = 7
 JOB_ACTIVE_STATUSES = {"applied", "interview", "pending"}
@@ -201,6 +202,22 @@ def _check_high_confidence_patterns(state: dict, user_facts: list[str]) -> list[
     return alerts
 
 
+def _check_temporal_alerts(state: dict) -> list[str]:
+    from temporal import get_temporal_summary
+
+    summary = get_temporal_summary()
+    alerts = []
+    for alert in summary.get("alerts", []):
+        key = f"temporal_{alert['type']}_{alert['category']}"
+        if _can_notify(state, key, COOLDOWN_HOURS["temporal"]):
+            emoji = {"acceleration": "🔺", "deceleration": "🔻", "divergence": "🔀"}.get(
+                alert["type"], "📊"
+            )
+            alerts.append(f"{emoji} *TEMPORAL:* {alert['message']}")
+            _mark_sent(state, key)
+    return alerts
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -216,6 +233,7 @@ async def main():
     all_alerts.extend(_check_stale_jobs(state))
     all_alerts.extend(_check_todo_notes(state))
     all_alerts.extend(_check_high_confidence_patterns(state, user_facts))
+    all_alerts.extend(_check_temporal_alerts(state))
 
     if not all_alerts:
         logger.info("No proactive notifications to send.")

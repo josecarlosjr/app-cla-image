@@ -7,6 +7,7 @@ from xml.etree import ElementTree
 import httpx
 
 from database import upsert_articles, get_articles, prune_articles
+from temporal import record_article_stats
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 LOG_FILE = os.path.join(DATA_DIR, "agent.log")
@@ -198,6 +199,7 @@ class FeedManager:
             all_fetched.extend(result)
 
         new_articles = upsert_articles(all_fetched)
+        record_article_stats(new_articles)
         prune_articles(MAX_CACHED)
         logger.info(
             "Feeds fetched: %d new articles, %d total.",
