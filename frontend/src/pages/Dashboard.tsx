@@ -44,7 +44,7 @@ export default function Dashboard() {
       <div>
         <h1 className="text-3xl font-bold">Dashboard</h1>
         <p className="text-slate-400 mt-1">
-          Panoramica da tua inteligencia pessoal
+          Panorama da sua inteligencia pessoal
         </p>
       </div>
 
@@ -96,13 +96,13 @@ export default function Dashboard() {
 
       <section>
         <h2 className="text-xs uppercase tracking-wider text-slate-400 mb-3">
-          Actividade
+          Atividade
         </h2>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard
             label="Candidaturas"
             value={jobsCount}
-            sub="total registadas"
+            sub="total registradas"
             accent="amber"
           />
           <StatCard
@@ -112,7 +112,7 @@ export default function Dashboard() {
             accent="blue"
           />
           <StatCard
-            label="Factos"
+            label="Fatos"
             value={stats?.facts_count || 0}
             sub="aprendidos"
             accent="green"
@@ -120,7 +120,7 @@ export default function Dashboard() {
           <StatCard
             label="Mensagens"
             value={stats?.total_messages || 0}
-            sub="historico"
+            sub="historico total"
             accent="blue"
           />
         </div>

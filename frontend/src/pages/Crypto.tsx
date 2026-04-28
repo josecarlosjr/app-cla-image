@@ -134,7 +134,7 @@ export default function Crypto() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64 text-slate-500">
-        A carregar dados...
+        Carregando dados...
       </div>
     );
   }
@@ -198,7 +198,7 @@ export default function Crypto() {
           ))}
           {scans.length === 0 && (
             <p className="text-slate-500">
-              Nenhum alerta ainda. O scanner corre a cada hora.
+              Nenhum alerta ainda. O scanner roda a cada hora.
             </p>
           )}
         </div>

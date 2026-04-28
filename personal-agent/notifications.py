@@ -194,7 +194,7 @@ def _check_high_confidence_patterns(state: dict, user_facts: list[str]) -> list[
         if _can_notify(state, key, COOLDOWN_HOURS["pattern_alta"]):
             cats = ", ".join(pattern.get("categories", []))
             alerts.append(
-                f"Padrao de *alta confianca* relevante para ti ({cats}):\n\n"
+                f"Padrao de *alta confianca* relevante pra voce ({cats}):\n\n"
                 f"{pattern.get('analysis', '')[:600]}"
             )
             _mark_sent(state, key)
@@ -240,7 +240,7 @@ async def main():
         _save_json(STATE_FILE, state)
         return
 
-    header = f"*NOTIFICACOES PROACTIVAS* ({len(all_alerts)})\n\n"
+    header = f"*NOTIFICACOES PROATIVAS* ({len(all_alerts)})\n\n"
     body = "\n\n---\n\n".join(all_alerts)
     message = header + body
 

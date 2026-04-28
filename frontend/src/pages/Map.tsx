@@ -134,7 +134,7 @@ export default function MapPage() {
         <h1 className="text-3xl font-bold">Mapa de dependencias</h1>
         <p className="text-slate-400 mt-1">
           Intensidade por categoria (tamanho e cor) + conexoes detectadas por
-          patterns
+          padroes
         </p>
       </div>
 
@@ -156,7 +156,7 @@ export default function MapPage() {
             </>
           ) : (
             <div className="text-slate-500 text-sm">
-              Toca num no ou ligacao para ver detalhes
+              Clique em um no ou conexao para ver detalhes
             </div>
           )}
         </aside>

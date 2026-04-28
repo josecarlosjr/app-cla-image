@@ -35,7 +35,7 @@ async def web_search(query: str) -> str:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=5))
         if not results:
-            return "Sem resultados encontrados."
+            return "Nenhum resultado encontrado."
         output = []
         for r in results:
             output.append(f"**{r['title']}**\n{r['body']}\n{r['href']}")
@@ -65,7 +65,7 @@ async def get_crypto_price(symbol: str) -> str:
         resp = await client.get(url, timeout=10)
         data = resp.json()
     if coin_id not in data:
-        return f"Crypto '{symbol}' nao encontrada. Tenta com o nome completo (ex: bitcoin)."
+        return f"Crypto '{symbol}' nao encontrada. Tente com o nome completo (ex: bitcoin)."
     info = data[coin_id]
     return json.dumps({
         "symbol": symbol.upper(),
@@ -144,7 +144,7 @@ async def save_note(title: str, content: str) -> str:
         f.write(f"# {title}\n\n")
         f.write(f"*Criado: {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n\n")
         f.write(content)
-    return f"Nota guardada: {filename}"
+    return f"Nota salva: {filename}"
 
 
 async def list_notes() -> str:
@@ -195,8 +195,8 @@ async def list_facts() -> str:
     m = Memory()
     facts = m.data.get("facts", [])
     if not facts:
-        return "Nao ha factos guardados sobre o utilizador."
-    return "Factos aprendidos sobre o utilizador:\n" + "\n".join(
+        return "Nao ha fatos guardados sobre o usuario."
+    return "Fatos aprendidos sobre o usuario:\n" + "\n".join(
         f"- {f}" for f in facts
     )
 
@@ -239,7 +239,7 @@ TOOLS_SCHEMA = [
         "name": "web_search",
         "description": (
             "Pesquisa na web via DuckDuckGo. "
-            "Usa para encontrar informacao actual sobre qualquer topico."
+            "Use para encontrar informacao atual sobre qualquer topico."
         ),
         "parameters": {
             "type": "object",
@@ -255,7 +255,7 @@ TOOLS_SCHEMA = [
     {
         "name": "get_crypto_price",
         "description": (
-            "Obtem preco actual de uma criptomoeda "
+            "Obtem preco atual de uma criptomoeda "
             "(Bitcoin, Ethereum, etc.) via CoinGecko."
         ),
         "parameters": {
@@ -318,7 +318,7 @@ TOOLS_SCHEMA = [
     },
     {
         "name": "list_jobs",
-        "description": "Lista candidaturas registadas. Pode filtrar por status.",
+        "description": "Lista candidaturas registradas. Pode filtrar por status.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -357,7 +357,7 @@ TOOLS_SCHEMA = [
     },
     {
         "name": "save_note",
-        "description": "Guarda uma nota em ficheiro Markdown.",
+        "description": "Salva uma nota em arquivo Markdown.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -375,7 +375,7 @@ TOOLS_SCHEMA = [
     },
     {
         "name": "list_notes",
-        "description": "Lista todas as notas guardadas.",
+        "description": "Lista todas as notas salvas.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -389,7 +389,7 @@ TOOLS_SCHEMA = [
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Nome do ficheiro da nota (com ou sem .md)",
+                    "description": "Nome do arquivo da nota (com ou sem .md)",
                 },
             },
             "required": ["filename"],
@@ -397,7 +397,7 @@ TOOLS_SCHEMA = [
     },
     {
         "name": "get_current_datetime",
-        "description": "Retorna data e hora actual.",
+        "description": "Retorna data e hora atual.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -417,7 +417,7 @@ TOOLS_SCHEMA = [
     {
         "name": "search_patterns",
         "description": (
-            "Procura padroes detectados pelo sistema de correlacao "
+            "Busca padroes detectados pelo sistema de correlacao "
             "multi-fonte. Pode filtrar por topico."
         ),
         "parameters": {
@@ -444,7 +444,7 @@ TOOLS_SCHEMA = [
     {
         "name": "list_facts",
         "description": (
-            "Lista os factos aprendidos pelo agente sobre o utilizador "
+            "Lista os fatos aprendidos pelo agente sobre o usuario "
             "(extraidos automaticamente das conversas)."
         ),
         "parameters": {
@@ -456,7 +456,7 @@ TOOLS_SCHEMA = [
         "name": "generate_digest_now",
         "description": (
             "Gera um digest agora (manha ou noite) sem esperar pelo CronJob. "
-            "Util quando o user pede 'faz-me um resumo'."
+            "Util quando o user pede 'me faca um resumo'."
         ),
         "parameters": {
             "type": "object",

@@ -211,9 +211,9 @@ def _is_updated_today(date_str: str) -> bool:
 async def _synthesise(mode: str, data: dict) -> str:
     if mode == "morning":
         prompt = f"""\
-Gera um BRIEFING MATINAL (09h) em portugues de Portugal para o user \
-Jose Carlos (DevOps/Platform Engineer em Portugal). Se directo, conciso \
-e accionavel. Usa emojis moderadamente.
+Gere um BRIEFING MATINAL (09h) em portugues do Brasil para o usuario \
+Jose Carlos (DevOps/Platform Engineer). Seja direto, conciso \
+e acionavel. Use emojis com moderacao.
 
 Estrutura obrigatoria:
 
@@ -225,22 +225,22 @@ Estrutura obrigatoria:
 *CRIPTO DESTAQUE* [cryptos com movimento significativo, top 3]
 {json.dumps(data.get('recent_crypto', [])[:3], indent=2, ensure_ascii=False)[:1500]}
 
-*TRENDS ACTIVAS* [categorias com scores mais altos]
+*TRENDS ATIVAS* [categorias com scores mais altos]
 {json.dumps(data.get('trends', []), indent=2, ensure_ascii=False)[:600]}
 
-*PADROES DETECTADOS* [padroes geopolitics/tech relevantes]
+*PADROES DETECTADOS* [padroes geopoliticos/tech relevantes]
 {json.dumps(data.get('recent_patterns', []), indent=2, ensure_ascii=False)[:2000]}
 
 *FOCO DO DIA* [prioridades baseadas em:
-- {data.get('active_jobs_count', 0)} candidaturas activas
+- {data.get('active_jobs_count', 0)} candidaturas ativas
 - {len(data.get('stale_jobs', []))} candidaturas sem update ha 7+ dias
 - Padroes e oportunidades detectadas acima]
 
-Sugere 3 accoes concretas para hoje. Maximo 300 palavras total.\
+Sugira 3 acoes concretas para hoje. Maximo 300 palavras total.\
 """
     else:
         prompt = f"""\
-Gera um RELATORIO NOCTURNO (21h) em portugues de Portugal para o user \
+Gere um RELATORIO NOTURNO (21h) em portugues do Brasil para o usuario \
 Jose Carlos. Reflexivo mas conciso.
 
 Estrutura obrigatoria:
@@ -249,19 +249,19 @@ Estrutura obrigatoria:
 
 *RESUMO DO DIA*
 - {data.get('conversations', 0)} conversas com o agente
-- {len(data.get('jobs_touched', []))} candidaturas actualizadas hoje
+- {len(data.get('jobs_touched', []))} candidaturas atualizadas hoje
 - {len(data.get('patterns_today', []))} padroes novos
 - {len(data.get('cryptos_today', []))} alertas cripto
 
-*NOVOS FACTOS APRENDIDOS HOJE* [ultimos 5 factos que o agente registou]
-Total de factos: {data.get('facts_count', 0)}
-Ultimos factos: {json.dumps(data.get('facts', [])[-5:], ensure_ascii=False)[:500]}
+*NOVOS FATOS APRENDIDOS HOJE* [ultimos 5 fatos que o agente registrou]
+Total de fatos: {data.get('facts_count', 0)}
+Ultimos fatos: {json.dumps(data.get('facts', [])[-5:], ensure_ascii=False)[:500]}
 
 *DESTAQUES*
 Patterns: {json.dumps(data.get('patterns_today', [])[:3], ensure_ascii=False)[:1500]}
 
 *RECOMENDACOES PARA AMANHA*
-Sugere 2-3 accoes concretas para amanha, baseadas nos patterns e no estado \
+Sugira 2-3 acoes concretas para amanha, baseadas nos padroes e no estado \
 das candidaturas.
 
 *REFLEXAO* [1 frase final, motivacional mas realista]
@@ -270,7 +270,7 @@ Maximo 300 palavras.\
 """
 
     text = await generate_text(prompt=prompt, max_tokens=1500)
-    return text or "Erro a gerar digest."
+    return text or "Erro ao gerar digest."
 
 
 # ---------------------------------------------------------------------------
