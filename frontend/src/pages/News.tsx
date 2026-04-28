@@ -10,12 +10,29 @@ const CATEGORIES = [
   "DEFESA_ESPACO",
   "DEVOPS_PLATFORM",
   "DADOS",
+  "MERCADOS",
 ];
+
+const PATTERN_CATEGORIES = [
+  "",
+  "chips_ia",
+  "energia",
+  "minerais",
+  "geopolitica",
+  "ciberseguranca",
+  "ciencia",
+  "espaco_defesa",
+  "financas",
+];
+
+const CONFIDENCE_LEVELS = ["", "ALTA", "MEDIA", "BAIXA"];
 
 export default function News() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [patterns, setPatterns] = useState<Pattern[]>([]);
   const [category, setCategory] = useState("");
+  const [patternCategory, setPatternCategory] = useState("");
+  const [patternConfidence, setPatternConfidence] = useState("");
   const [tab, setTab] = useState<"articles" | "patterns">("patterns");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshResult, setRefreshResult] = useState("");
@@ -23,15 +40,21 @@ export default function News() {
   const [detectResult, setDetectResult] = useState("");
 
   const loadData = useCallback(async () => {
+    const patternParams: Record<string, string> = {};
+    if (patternConfidence) patternParams.confidence = patternConfidence;
+    if (patternCategory) patternParams.category = patternCategory;
+
     const [n, p] = await Promise.all([
       api.get<{ articles: Article[] }>("/news", {
         params: category ? { category } : {},
       }),
-      api.get<{ patterns: Pattern[] }>("/patterns"),
+      api.get<{ patterns: Pattern[] }>("/patterns", {
+        params: patternParams,
+      }),
     ]);
     setArticles(n.data.articles || []);
     setPatterns((p.data.patterns || []).reverse());
-  }, [category]);
+  }, [category, patternCategory, patternConfidence]);
 
   useEffect(() => {
     loadData();
@@ -51,7 +74,7 @@ export default function News() {
       );
       await loadData();
     } catch {
-      setRefreshResult("Erro ao actualizar feeds");
+      setRefreshResult("Erro ao atualizar feeds");
     } finally {
       setRefreshing(false);
     }
@@ -103,7 +126,7 @@ export default function News() {
               disabled={refreshing}
               className="px-4 py-2 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 rounded-lg text-sm font-medium transition"
             >
-              {refreshing ? "A actualizar..." : "Actualizar feeds"}
+              {refreshing ? "Atualizando..." : "Atualizar feeds"}
             </button>
           </div>
           <div className="flex items-center gap-2">
@@ -116,7 +139,7 @@ export default function News() {
               className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded-lg text-sm font-medium transition"
               title="Usa Claude API (~$0.04 por deteccao)"
             >
-              {detecting ? "A detectar..." : "Detectar padroes (~$0.04)"}
+              {detecting ? "Detectando..." : "Detectar padroes (~$0.04)"}
             </button>
           </div>
         </div>
@@ -147,6 +170,36 @@ export default function News() {
 
       {tab === "patterns" ? (
         <div className="space-y-3">
+          <div className="flex gap-3">
+            <select
+              value={patternCategory}
+              onChange={(e) => setPatternCategory(e.target.value)}
+              className="bg-slate-800 rounded-lg px-3 py-2 text-sm"
+            >
+              {PATTERN_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {c || "Todas as categorias"}
+                </option>
+              ))}
+            </select>
+            <select
+              value={patternConfidence}
+              onChange={(e) => setPatternConfidence(e.target.value)}
+              className="bg-slate-800 rounded-lg px-3 py-2 text-sm"
+            >
+              {CONFIDENCE_LEVELS.map((c) => (
+                <option key={c} value={c}>
+                  {c
+                    ? c === "ALTA"
+                      ? "Forte"
+                      : c === "MEDIA"
+                      ? "Media"
+                      : "Fraca"
+                    : "Todas as confianças"}
+                </option>
+              ))}
+            </select>
+          </div>
           {patterns.map((p, i) => (
             <div
               key={i}
@@ -206,7 +259,7 @@ export default function News() {
           ))}
           {patterns.length === 0 && (
             <p className="text-slate-500">
-              Nenhum padrao detectado. Clica "Actualizar feeds" para buscar
+              Nenhum padrao detectado. Clique em "Atualizar feeds" para buscar
               artigos — padroes surgem quando 2+ fontes cobrem o mesmo tema.
             </p>
           )}
@@ -265,8 +318,8 @@ export default function News() {
             ))}
             {articles.length === 0 && (
               <p className="text-slate-500">
-                Nenhum artigo ainda. Clica "Actualizar feeds" para buscar
-                artigos de 25+ fontes RSS.
+                Nenhum artigo ainda. Clique em "Atualizar feeds" para buscar
+                artigos de 37+ fontes RSS.
               </p>
             )}
           </div>

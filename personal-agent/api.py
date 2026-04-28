@@ -290,8 +290,11 @@ async def get_news_analysis():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/patterns")
-async def get_patterns(confidence: str = Query("", description="ALTA, MEDIA, BAIXA")):
-    patterns = db.get_patterns(confidence=confidence)
+async def get_patterns(
+    confidence: str = Query("", description="ALTA, MEDIA, BAIXA"),
+    category: str = Query("", description="Filter by category (e.g. chips_ia, financas)"),
+):
+    patterns = db.get_patterns(confidence=confidence, category=category)
     return {"patterns": patterns[:20], "total": len(patterns)}
 
 

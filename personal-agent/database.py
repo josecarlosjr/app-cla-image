@@ -238,6 +238,7 @@ def get_patterns(
     *,
     hours: int = 0,
     confidence: str = "",
+    category: str = "",
     limit: int = 0,
 ) -> list[dict]:
     conn = _db()
@@ -251,6 +252,9 @@ def get_patterns(
     if confidence:
         clauses.append("confidence = ?")
         params.append(confidence.upper())
+    if category:
+        clauses.append("categories_json LIKE ?")
+        params.append(f"%{category}%")
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     limit_sql = f"LIMIT {int(limit)}" if limit > 0 else ""

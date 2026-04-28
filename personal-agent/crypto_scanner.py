@@ -157,15 +157,15 @@ async def _analyze_coin(coin: dict, search_context: str) -> str | None:
     change = coin["price_change_24h"]
     prompt = (
         f"A criptomoeda {coin['name']} ({coin['symbol']}) subiu "
-        f"{change:+.1f}% nas ultimas 24h. Preco actual: ${coin['price_usd']:,.4f}.\n"
+        f"{change:+.1f}% nas ultimas 24h. Preco atual: ${coin['price_usd']:,.4f}.\n"
         f"Market cap rank: #{coin.get('market_cap_rank', 'N/A')}\n\n"
         f"Contexto da pesquisa web:\n{search_context[:2000]}\n\n"
-        "Analisa em portugues de Portugal com esta estrutura EXACTA:\n\n"
-        "*PORQUE SUBIU:* [2-3 frases com a causa real]\n\n"
+        "Analise em portugues do Brasil com esta estrutura EXATA:\n\n"
+        "*POR QUE SUBIU:* [2-3 frases com a causa real]\n\n"
         "*OPORTUNIDADE OU ARMADILHA:* [avaliacao honesta — e pump & dump? "
         "Ha fundamentos? Argumentos pro e contra]\n\n"
-        "*ACCAO SUGERIDA:* [aguardar/comprar/evitar e porque — se conciso]\n\n"
-        "Se directo e honesto. Maximo 150 palavras."
+        "*ACAO SUGERIDA:* [aguardar/comprar/evitar e por que — seja conciso]\n\n"
+        "Seja direto e honesto. Maximo 150 palavras."
     )
 
     text = await generate_text(prompt=prompt, max_tokens=768)
@@ -192,7 +192,7 @@ async def scan_trending() -> str:
     pumping.sort(key=lambda x: x["price_change_24h"], reverse=True)
 
     if not pumping:
-        return "Nenhuma crypto com variacao superior a +15% nas ultimas 24h."
+        return "Nenhuma crypto com variacao superior a +5% nas ultimas 24h."
 
     lines = [f"*Top Gainers (>+{MIN_CHANGE_PCT:.0f}% 24h):*\n"]
     for c in pumping[:10]:

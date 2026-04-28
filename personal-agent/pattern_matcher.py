@@ -186,15 +186,15 @@ async def _analyze_pattern(cluster: list[dict], categories: list[str]) -> dict |
         f"{titles_block}\n\n"
         f"Categorias detectadas: {', '.join(categories)}\n"
         f"Fontes: {', '.join(sources)}\n\n"
-        "Analisa em portugues de Portugal com esta estrutura EXACTA:\n\n"
-        "*PADRAO:* O que estas noticias em conjunto revelam (2 frases)\n\n"
-        "*CAUSA RAIZ:* O que esta realmente a acontecer por detras (2 frases)\n\n"
-        "*CADEIA DE IMPACTO:* A -> B -> C (como isto se propaga)\n\n"
-        "*LIGACAO AO MAPA:* Qual categoria do mapa de dependencias e afectada\n\n"
+        "Analise em portugues do Brasil com esta estrutura EXATA:\n\n"
+        "*PADRAO:* O que essas noticias juntas revelam (2 frases)\n\n"
+        "*CAUSA RAIZ:* O que realmente esta acontecendo por tras (2 frases)\n\n"
+        "*CADEIA DE IMPACTO:* A -> B -> C (como isso se propaga)\n\n"
+        "*CONEXAO AO MAPA:* Qual categoria do mapa de dependencias e afetada\n\n"
         "*IMPACTO FINANCEIRO:* Oportunidades concretas "
-        "(COMPRAR/VENDER/CAUTELA com activo especifico)\n\n"
+        "(COMPRAR/VENDER/CAUTELA com ativo especifico)\n\n"
         "*CONFIANCA:* ALTA/MEDIA/BAIXA baseado no numero e qualidade das fontes\n\n"
-        "Se conciso. Maximo 200 palavras."
+        "Seja conciso. Maximo 200 palavras."
     )
 
     text = await generate_text(prompt=prompt, max_tokens=1024)
@@ -265,7 +265,7 @@ async def detect_patterns_on_demand() -> dict:
 
     if len(articles) < 5:
         return {"new_patterns": 0, "clusters": 0, "articles": len(articles),
-                "message": f"Poucos artigos ({len(articles)}). Clica 'Actualizar feeds' primeiro."}
+                "message": f"Poucos artigos ({len(articles)}). Clique em 'Atualizar feeds' primeiro."}
 
     for article in articles:
         article["_categories"] = _classify_article(article)

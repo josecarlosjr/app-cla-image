@@ -8,7 +8,7 @@ export default function Chat() {
     {
       role: "assistant",
       content:
-        "Ola Jose Carlos. Pergunta-me algo — posso pesquisar na web, ver precos, analisar patterns ou gerar um digest.",
+        "Ola Jose Carlos! Me pergunte algo — posso pesquisar na web, ver precos, analisar patterns ou gerar um digest.",
     },
   ]);
   const [input, setInput] = useState("");
@@ -51,7 +51,7 @@ export default function Chat() {
       <div>
         <h1 className="text-3xl font-bold">Chat</h1>
         <p className="text-slate-400 mt-1 mb-6">
-          Conversa com o agente (o mesmo bot do Telegram)
+          Converse com o agente (mesmo bot do Telegram)
         </p>
       </div>
 
@@ -78,7 +78,7 @@ export default function Chat() {
           {loading && (
             <div className="flex justify-start">
               <div className="bg-slate-800 px-4 py-3 rounded-lg">
-                <span className="text-slate-400">a pensar...</span>
+                <span className="text-slate-400">pensando...</span>
               </div>
             </div>
           )}
@@ -91,7 +91,7 @@ export default function Chat() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
-            placeholder="Pergunta algo..."
+            placeholder="Pergunte algo..."
             className="flex-1 bg-slate-800 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-primary-500"
             disabled={loading}
           />

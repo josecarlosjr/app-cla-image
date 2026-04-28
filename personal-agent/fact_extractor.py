@@ -16,38 +16,38 @@ from memory import Memory
 logger = logging.getLogger(__name__)
 
 EXTRACTION_PROMPT = """\
-Analisa esta conversa e extrai APENAS factos NOVOS sobre o utilizador \
-(preferencias, objectivos, situacao pessoal, familia, trabalho, locais, \
+Analise esta conversa e extraia APENAS fatos NOVOS sobre o usuario \
+(preferencias, objetivos, situacao pessoal, familia, trabalho, locais, \
 planos concretos).
 
-NAO incluas:
-- Factos genericos sobre o mundo
-- Perguntas do utilizador
+NAO inclua:
+- Fatos genericos sobre o mundo
+- Perguntas do usuario
 - Pedidos de informacao
-- Informacao ja conhecida (ver "Factos ja guardados" abaixo)
+- Informacao ja conhecida (ver "Fatos ja guardados" abaixo)
 
-Factos ja guardados:
+Fatos ja guardados:
 {existing_facts}
 
-Ultima mensagem do utilizador:
+Ultima mensagem do usuario:
 {user_message}
 
 Resposta do agente:
 {agent_response}
 
-Exemplos de factos validos:
-- "Trabalha em Lisboa"
+Exemplos de fatos validos:
+- "Trabalha como DevOps Engineer"
 - "Tem interesse em investir em Bitcoin"
 - "Tem uma entrevista na empresa X na proxima semana"
-- "Esta a aprender Portugues de Portugal"
+- "Esta aprendendo Kubernetes"
 
 Exemplos INVALIDOS (nao incluir):
-- "Perguntou sobre o tempo" (nao e facto do user)
-- "Quer saber o preco do BTC" (e uma pergunta, nao um facto)
-- "Tem interesse em cripto" (se ja esta nos factos guardados)
+- "Perguntou sobre o tempo" (nao e fato do user)
+- "Quer saber o preco do BTC" (e uma pergunta, nao um fato)
+- "Tem interesse em cripto" (se ja esta nos fatos guardados)
 
-Responde em portugues de Portugal, frases curtas e directas.
-Se nao houver factos novos, retorna uma lista vazia.
+Responda em portugues do Brasil, frases curtas e diretas.
+Se nao houver fatos novos, retorne uma lista vazia.
 """
 
 FACT_SCHEMA = {
@@ -57,8 +57,8 @@ FACT_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
             "description": (
-                "Lista de factos novos em portugues de Portugal, "
-                "frases curtas e directas (entre 10 e 300 caracteres cada)."
+                "Lista de fatos novos em portugues do Brasil, "
+                "frases curtas e diretas (entre 10 e 300 caracteres cada)."
             ),
         }
     },
@@ -87,7 +87,7 @@ async def extract_facts(
         schema=FACT_SCHEMA,
         model=MODEL_HAIKU,
         tool_name="save_facts",
-        tool_description="Regista factos novos aprendidos sobre o utilizador.",
+        tool_description="Registra fatos novos aprendidos sobre o usuario.",
         max_tokens=512,
     )
 

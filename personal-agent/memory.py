@@ -39,8 +39,8 @@ class Memory:
 
     def get_facts_summary(self) -> str:
         if not self.data["facts"]:
-            return "Sem factos guardados sobre o utilizador."
-        return "Factos conhecidos:\n" + "\n".join(
+            return "Sem fatos guardados sobre o usuario."
+        return "Fatos conhecidos:\n" + "\n".join(
             f"- {f}" for f in self.data["facts"]
         )
 

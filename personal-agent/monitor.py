@@ -160,12 +160,12 @@ async def _check_crypto(state: dict) -> list[str]:
                 f"Preco: ${price:,.2f}\n"
                 f"Variacao 24h: {change_24h:+.2f}%\n"
                 f"Motivo: {reason}\n\n"
-                f"*Se continua:* "
-                f"{'Rally pode estender-se — considerar manter posicao.' if up else 'Queda pode aprofundar-se — avaliar stop-loss.'}\n"
-                f"*Se recupera:* "
-                f"{'Possivel correccao apos subida forte — nao FOMO.' if up else 'Possivel oportunidade de compra em suporte.'}\n\n"
-                f"*Accao sugerida:* "
-                f"{'Monitorizar resistencias e definir take-profit.' if up else 'Verificar niveis de suporte e volume.'}"
+                f"*Se continuar:* "
+                f"{'Rally pode se estender — considere manter posicao.' if up else 'Queda pode se aprofundar — avalie stop-loss.'}\n"
+                f"*Se reverter:* "
+                f"{'Possivel correcao apos subida forte — nao entre em FOMO.' if up else 'Possivel oportunidade de compra em suporte.'}\n\n"
+                f"*Acao sugerida:* "
+                f"{'Monitorar resistencias e definir take-profit.' if up else 'Verificar niveis de suporte e volume.'}"
             )
             _mark_alerted(state, f"crypto_{coin_id}")
 
@@ -225,11 +225,11 @@ async def _check_commodities(state: dict) -> list[str]:
                     f"Preco: ${price:,.2f}\n"
                     f"Variacao: {pct_change:+.2f}%\n"
                     f"Motivo: {reason}\n\n"
-                    f"*Se continua:* "
-                    f"{'Pressao altista — monitorizar factores geopoliticos.' if up else 'Pressao baixista — verificar inventarios e producao.'}\n"
-                    f"*Se recupera:* "
-                    f"{'Possivel correccao — nao perseguir preco.' if up else 'Potencial recuperacao — avaliar entrada gradual.'}\n\n"
-                    f"*Accao sugerida:* Analisar noticias geopoliticas relacionadas."
+                    f"*Se continuar:* "
+                    f"{'Pressao de alta — monitorar fatores geopoliticos.' if up else 'Pressao de baixa — verificar estoques e producao.'}\n"
+                    f"*Se reverter:* "
+                    f"{'Possivel correcao — nao persiga o preco.' if up else 'Potencial recuperacao — avalie entrada gradual.'}\n\n"
+                    f"*Acao sugerida:* Analisar noticias geopoliticas relacionadas."
                 )
                 _mark_alerted(state, f"commodity_{key}")
 

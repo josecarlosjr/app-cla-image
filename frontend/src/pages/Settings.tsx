@@ -40,7 +40,7 @@ export default function Settings() {
           accent="blue"
         />
         <StatCard
-          label="Factos"
+          label="Fatos"
           value={stats?.facts_count || 0}
           sub="aprendidos"
           accent="amber"
@@ -48,7 +48,7 @@ export default function Settings() {
       </div>
 
       <section>
-        <h2 className="text-xl font-bold mb-3">Factos aprendidos</h2>
+        <h2 className="text-xl font-bold mb-3">Fatos aprendidos</h2>
         <div className="bg-slate-900 rounded-lg border border-slate-800 p-5">
           {stats?.facts.length ? (
             <ul className="space-y-2">
@@ -66,8 +66,8 @@ export default function Settings() {
             </ul>
           ) : (
             <p className="text-slate-500">
-              Nenhum facto aprendido ainda. Conversa com o agente e ele comeca a
-              registar factos sobre ti automaticamente.
+              Nenhum fato aprendido ainda. Converse com o agente e ele comeca a
+              registrar fatos sobre voce automaticamente.
             </p>
           )}
         </div>

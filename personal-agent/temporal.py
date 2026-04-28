@@ -161,12 +161,12 @@ def detect_divergence(
             status = "diverging"
             if source_ratio > 1:
                 detail = (
-                    f"{recent_avg:.0f} fontes activas "
-                    f"(vs {baseline_avg:.0f} habitual) — cobertura alargada"
+                    f"{recent_avg:.0f} fontes ativas "
+                    f"(vs {baseline_avg:.0f} habitual) — cobertura ampliada"
                 )
             else:
                 detail = (
-                    f"{recent_avg:.0f} fontes activas "
+                    f"{recent_avg:.0f} fontes ativas "
                     f"(vs {baseline_avg:.0f} habitual) — cobertura reduzida"
                 )
 

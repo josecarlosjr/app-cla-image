@@ -83,13 +83,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_allowed(update):
         return
     await update.message.reply_text(
-        "Ola! Sou o teu assistente pessoal de inteligencia.\n\n"
-        "Posso ajudar-te com:\n"
+        "Ola! Sou seu assistente pessoal de inteligencia.\n\n"
+        "Posso te ajudar com:\n"
         "- Pesquisas na web\n"
         "- Precos de crypto e commodities\n"
         "- Gestao de candidaturas\n"
         "- Notas e organizacao\n\n"
-        "Envia-me qualquer mensagem para comecar!"
+        "Me envie qualquer mensagem para comecar!"
     )
 
 
@@ -102,9 +102,9 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     assistant_msgs = sum(1 for m in history if m["role"] == "assistant")
     await update.message.reply_text(
         f"Estatisticas:\n"
-        f"- Mensagens do utilizador: {user_msgs}\n"
+        f"- Mensagens do usuario: {user_msgs}\n"
         f"- Respostas do agente: {assistant_msgs}\n"
-        f"- Factos guardados: {len(facts)}\n"
+        f"- Fatos guardados: {len(facts)}\n"
         f"- Total no historico: {len(history)}"
     )
 
@@ -114,13 +114,13 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     memory.clear_history()
     await update.message.reply_text(
-        "Historico limpo. Os factos guardados foram mantidos."
+        "Historico limpo. Os fatos guardados foram mantidos."
     )
 
 
 async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"O teu Telegram ID e: {update.effective_user.id}"
+        f"Seu Telegram ID e: {update.effective_user.id}"
     )
 
 
@@ -131,10 +131,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Comandos disponiveis:\n\n"
         "/start  -  Mensagem de boas-vindas\n"
         "/stats  -  Estatisticas de uso\n"
-        "/clear  -  Limpar historico (mantem factos)\n"
-        "/myid   -  Ver o teu Telegram ID\n"
+        "/clear  -  Limpar historico (mantem fatos)\n"
+        "/myid   -  Ver seu Telegram ID\n"
         "/help   -  Esta mensagem\n\n"
-        "Envia qualquer mensagem de texto para interagir com o agente."
+        "Envie qualquer mensagem de texto para interagir com o agente."
     )
 
 

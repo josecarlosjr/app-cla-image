@@ -197,19 +197,19 @@ def _score_article(article: dict, cat_cfg: dict) -> int:
 
 async def _analyze_article(article: dict, category_name: str) -> str | None:
     prompt = (
-        f'Analisa esta noticia da categoria "{category_name}".\n'
+        f'Analise esta noticia da categoria "{category_name}".\n'
         f"Titulo: {article['title']}\n"
         f"Resumo: {article['summary']}\n"
         f"Fonte: {article['source']}\n\n"
-        "Responde em portugues de Portugal com esta estrutura EXACTA:\n\n"
+        "Responda em portugues do Brasil com esta estrutura EXATA:\n\n"
         "*O que aconteceu:* [1-2 frases]\n\n"
-        "*Porque:* [contexto e causas]\n\n"
-        "*Quem ganha:* [beneficiarios]\n\n"
+        "*Por que:* [contexto e causas]\n\n"
+        "*Quem ganha:* [beneficiados]\n\n"
         "*Quem perde:* [prejudicados]\n\n"
-        "*Impacto PT/Europa:* [impacto especifico para Portugal e Europa]\n\n"
-        "*Oportunidade investimento:* [se aplicavel]\n\n"
-        "*Ligacao ao mapa geopolitico:* [como se encaixa no contexto global]\n\n"
-        "Se conciso e directo. Maximo 200 palavras total."
+        "*Impacto global:* [impacto para mercados e oportunidades]\n\n"
+        "*Oportunidade de investimento:* [se aplicavel]\n\n"
+        "*Conexao ao mapa geopolitico:* [como se encaixa no contexto global]\n\n"
+        "Seja conciso e direto. Maximo 200 palavras total."
     )
 
     text = await generate_text(prompt=prompt, max_tokens=1024)
