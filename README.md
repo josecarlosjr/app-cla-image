@@ -99,15 +99,16 @@ Overlap de conjuntos (Jaccard-like) entre entidades extraídas pelo Haiku.
 
 
 O que NÃO está sendo usado:
-Técnica	Status
-Redes neurais treinadas/fine-tuned	Nenhuma
-Classificação supervisionada (SVM, Random Forest)	Nenhuma
-Deep learning próprio	Nenhum
-Grafos de conhecimento (knowledge graphs)	Nenhum (o mapa é visual, não um grafo real)
-Sentiment analysis dedicado	Nenhum (o LLM faz implicitamente)
-Time series forecasting (ARIMA, Prophet)	Nenhum
-Reinforcement learning	Nenhum
-Data mining formal (Apriori, FP-Growth)	Nenhum
+
+
+**Redes neurais treinadas/fine-tuned**	Nenhuma
+**Classificação supervisionada (SVM, Random Forest)**	Nenhuma
+**Deep learning próprio**	Nenhum
+**Grafos de conhecimento (knowledge graphs)**	Nenhum (o mapa é visual, não um grafo real)
+**Sentiment analysis dedicado**	Nenhum (o LLM faz implicitamente)
+**Time series forecasting (ARIMA, Prophet)**	Nenhum
+**Reinforcement learning**	Nenhum
+**Data mining formal (Apriori, FP-Growth)**	Nenhum
 
 
 
