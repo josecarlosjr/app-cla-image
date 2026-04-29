@@ -50,7 +50,7 @@ Isso é um single-linkage greedy — não é K-means, DBSCAN, nem hierárquico. 
 **Mínimo 2 fontes distintas** = "strong pattern"
 
 
-**4. Scoring / Ranking **— Algoritmos baseados em regras
+**4. Scoring / Ranking**— Algoritmos baseados em regras
 Relevance Filter (relevance_filter.py) — Score 0-100 com 5 componentes:
 
 .Pattern match score (artigo aparece em cluster?)
@@ -66,7 +66,7 @@ Contagem ponderada de artigos (fontes premium peso 3x, médias 2x)
 Normalização e detecção de tendência (rising/falling/stable)
 Ambos são heurísticas manuais, não machine learning.
 
-**5. Detecção Temporal **— Estatística descritiva
+**5. Detecção Temporal**— Estatística descritiva
 Acceleration (temporal.py):
 
 ratio = artigos_nas_últimas_12h / (média_7_dias × 12h)
