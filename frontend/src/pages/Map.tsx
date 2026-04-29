@@ -11,6 +11,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   ciencia: "Ciencia",
   espaco_defesa: "Espaco & Defesa",
   financas: "Financas",
+  cadeia_suprimentos: "Cadeia de Suprimentos",
 };
 
 function scoreColour(score: number): string {

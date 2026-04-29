@@ -14,25 +14,21 @@ from database import (
     insert_pattern, get_patterns, get_pattern_article_titles, prune_patterns,
 )
 
+from log_config import setup_logging
+
+setup_logging()
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-LOG_FILE = os.path.join(DATA_DIR, "agent.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(),
-    ],
-)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
 
-MAX_PATTERNS_STORED = 100
+MAX_PATTERNS_STORED = 300
+MAX_ARTICLES_FOR_CLUSTERING = 3000
 TFIDF_SIMILARITY_THRESHOLD = 0.3
 SEMANTIC_SIMILARITY_THRESHOLD = 0.5
 SEMANTIC_BOOSTED_THRESHOLD = 0.35
@@ -43,24 +39,31 @@ ENRICH_MAX_NEW_PER_RUN = 50
 CATEGORIES = [
     "chips_ia", "energia", "minerais", "geopolitica",
     "ciberseguranca", "ciencia", "espaco_defesa", "financas",
+    "cadeia_suprimentos",
 ]
 
 CATEGORY_KEYWORDS = {
     "chips_ia": [
         "semiconductor", "gpu", "nvidia", "tsmc", "llm", "agi",
-        "ai chip", "intel", "amd", "chip", "foundry",
+        "ai chip", "intel", "amd", "chip", "foundry", "hbm",
+        "dram", "nand", "wafer", "asml", "sram", "npu", "tpu",
     ],
     "energia": [
         "nuclear", "solar", "wind", "grid", "battery", "datacenter",
-        "energy", "power", "renewable", "smr",
+        "energy", "power", "renewable", "smr", "photovoltaic",
+        "hydrogen", "geothermal", "transformer", "transmission",
+        "smart grid", "bess", "power plant", "utility",
     ],
     "minerais": [
         "rare earth", "copper", "lithium", "cobalt", "tin",
-        "critical mineral", "mining",
+        "critical mineral", "mining", "silver", "nickel",
+        "platinum", "palladium", "gallium", "germanium",
+        "neodymium", "dysprosium", "indium", "antimony",
+        "uranium", "ore", "smelting", "refining",
     ],
     "geopolitica": [
         "us china", "strait of hormuz", "nato", "sanctions", "brics",
-        "tariff", "trade war", "geopolit",
+        "tariff", "trade war", "geopolit", "export control",
     ],
     "ciberseguranca": [
         "apt", "zero-day", "ransomware", "cyber", "hack",
@@ -79,6 +82,11 @@ CATEGORY_KEYWORDS = {
         "fed", "interest rate", "market", "ipo", "earnings",
         "nasdaq", "s&p 500", "dow jones", "trading", "dividend",
         "wall street", "bull market", "bear market", "hedge fund",
+    ],
+    "cadeia_suprimentos": [
+        "supply chain", "logistics", "shipping", "freight",
+        "shortage", "bottleneck", "manufacturing", "fab",
+        "export ban", "stockpile", "inventory",
     ],
 }
 
@@ -122,6 +130,10 @@ def _classify_article(article: dict) -> list[str]:
 async def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
     if len(articles) < 3:
         return []
+
+    if len(articles) > MAX_ARTICLES_FOR_CLUSTERING:
+        articles = sorted(articles, key=lambda a: a.get("fetched_at", ""), reverse=True)[:MAX_ARTICLES_FOR_CLUSTERING]
+        logger.info("Sampled %d most recent articles for clustering.", MAX_ARTICLES_FOR_CLUSTERING)
 
     texts = [
         f"{a.get('title', '')} {a.get('summary', '')}" for a in articles

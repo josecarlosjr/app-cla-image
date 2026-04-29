@@ -17,7 +17,7 @@ from database import get_enrichments_batch, save_enrichment, prune_enrichments
 
 logger = logging.getLogger(__name__)
 
-MAX_CACHE_ENTRIES = 5000
+MAX_CACHE_ENTRIES = 12000
 
 ENRICHMENT_SCHEMA = {
     "type": "object",

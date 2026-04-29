@@ -5,12 +5,16 @@ const CATEGORIES = [
   "",
   "TECNOLOGIA_IA",
   "CIBERSEGURANCA",
-  "CIENCIA_ENERGIA",
+  "CIENCIA",
+  "ENERGIA",
+  "MINERAIS_MINERACAO",
+  "SUPPLY_CHAIN_LOGISTICA",
   "GEOPOLITICA_FINANCAS",
   "DEFESA_ESPACO",
   "DEVOPS_PLATFORM",
   "DADOS",
   "MERCADOS",
+  "CIENCIA_ENERGIA",
 ];
 
 const PATTERN_CATEGORIES = [
@@ -23,6 +27,7 @@ const PATTERN_CATEGORIES = [
   "ciencia",
   "espaco_defesa",
   "financas",
+  "cadeia_suprimentos",
 ];
 
 const CONFIDENCE_LEVELS = ["", "ALTA", "MEDIA", "BAIXA"];

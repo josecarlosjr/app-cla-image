@@ -338,7 +338,7 @@ def save_enrichment(url: str, entities: list[str], topics: list[str]) -> None:
         )
 
 
-def prune_enrichments(max_entries: int = 5000) -> None:
+def prune_enrichments(max_entries: int = 12000) -> None:
     conn = _db()
     count = conn.execute("SELECT COUNT(*) FROM enrichments").fetchone()[0]
     if count <= max_entries:
@@ -390,7 +390,7 @@ def save_embeddings_batch(
         )
 
 
-def prune_embeddings(max_entries: int = 10000) -> None:
+def prune_embeddings(max_entries: int = 25000) -> None:
     conn = _db()
     count = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
     if count <= max_entries:
