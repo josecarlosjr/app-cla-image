@@ -291,6 +291,7 @@ def prune_patterns(max_rows: int = 100) -> None:
 
 def _row_to_pattern(row: sqlite3.Row) -> dict:
     return {
+        "id": row["id"],
         "articles": json.loads(row["articles_json"]),
         "categories": json.loads(row["categories_json"]),
         "sources": json.loads(row["sources_json"]),
