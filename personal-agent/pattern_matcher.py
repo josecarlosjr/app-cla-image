@@ -14,25 +14,21 @@ from database import (
     insert_pattern, get_patterns, get_pattern_article_titles, prune_patterns,
 )
 
+from log_config import setup_logging
+
+setup_logging()
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-LOG_FILE = os.path.join(DATA_DIR, "agent.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(),
-    ],
-)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
 
-MAX_PATTERNS_STORED = 100
+MAX_PATTERNS_STORED = 300
+MAX_ARTICLES_FOR_CLUSTERING = 3000
 TFIDF_SIMILARITY_THRESHOLD = 0.3
 SEMANTIC_SIMILARITY_THRESHOLD = 0.5
 SEMANTIC_BOOSTED_THRESHOLD = 0.35
@@ -122,6 +118,10 @@ def _classify_article(article: dict) -> list[str]:
 async def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
     if len(articles) < 3:
         return []
+
+    if len(articles) > MAX_ARTICLES_FOR_CLUSTERING:
+        articles = sorted(articles, key=lambda a: a.get("fetched_at", ""), reverse=True)[:MAX_ARTICLES_FOR_CLUSTERING]
+        logger.info("Sampled %d most recent articles for clustering.", MAX_ARTICLES_FOR_CLUSTERING)
 
     texts = [
         f"{a.get('title', '')} {a.get('summary', '')}" for a in articles

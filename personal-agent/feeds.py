@@ -1,7 +1,8 @@
 import os
+import json
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from xml.etree import ElementTree
 
 import httpx
@@ -9,20 +10,18 @@ import httpx
 from database import upsert_articles, get_articles, prune_articles
 from temporal import record_article_stats
 
+from log_config import setup_logging
+
+setup_logging()
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-LOG_FILE = os.path.join(DATA_DIR, "agent.log")
-MAX_CACHED = 3000
+MAX_CACHED = 8000
+FEED_HEALTH_FILE = os.path.join(DATA_DIR, "feed_health.json")
+MAX_CONSECUTIVE_FAILURES = 5
+FEED_COOLDOWN_HOURS = 6
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(),
-    ],
-)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -177,8 +176,53 @@ def _strip_html(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 class FeedManager:
+    def __init__(self):
+        self._health = self._load_health()
+
+    def _load_health(self) -> dict:
+        if os.path.exists(FEED_HEALTH_FILE):
+            try:
+                with open(FEED_HEALTH_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_health(self):
+        with open(FEED_HEALTH_FILE, "w", encoding="utf-8") as f:
+            json.dump(self._health, f, indent=2, ensure_ascii=False)
+
+    def _is_feed_healthy(self, source: str) -> bool:
+        entry = self._health.get(source)
+        if not entry:
+            return True
+        if entry.get("consecutive_failures", 0) < MAX_CONSECUTIVE_FAILURES:
+            return True
+        skip_until = entry.get("skip_until", "")
+        if skip_until and datetime.now(timezone.utc).isoformat() < skip_until:
+            return False
+        entry["consecutive_failures"] = 0
+        return True
+
+    def _record_success(self, source: str):
+        self._health.pop(source, None)
+
+    def _record_failure(self, source: str):
+        entry = self._health.setdefault(source, {"consecutive_failures": 0})
+        entry["consecutive_failures"] = entry.get("consecutive_failures", 0) + 1
+        entry["last_failure"] = datetime.now(timezone.utc).isoformat()
+        if entry["consecutive_failures"] >= MAX_CONSECUTIVE_FAILURES:
+            entry["skip_until"] = (
+                datetime.now(timezone.utc) + timedelta(hours=FEED_COOLDOWN_HOURS)
+            ).isoformat()
+            logger.warning(
+                "Feed %s disabled for %dh after %d consecutive failures.",
+                source, FEED_COOLDOWN_HOURS, entry["consecutive_failures"],
+            )
+
     async def fetch_all(self) -> list[dict]:
         all_fetched: list[dict] = []
+        skipped = 0
 
         headers = {"User-Agent": "PersonalAgent/1.0 (news-aggregator)"}
         async with httpx.AsyncClient(
@@ -187,6 +231,9 @@ class FeedManager:
             tasks = []
             for category, feeds in FEEDS.items():
                 for source_name, url in feeds:
+                    if not self._is_feed_healthy(source_name):
+                        skipped += 1
+                        continue
                     tasks.append(
                         self._fetch_one(client, source_name, url, category)
                     )
@@ -198,12 +245,14 @@ class FeedManager:
                 continue
             all_fetched.extend(result)
 
+        self._save_health()
+
         new_articles = upsert_articles(all_fetched)
         record_article_stats(new_articles)
         prune_articles(MAX_CACHED)
         logger.info(
-            "Feeds fetched: %d new articles, %d total.",
-            len(new_articles), len(all_fetched),
+            "Feeds fetched: %d new articles, %d total fetched, %d feeds skipped (unhealthy).",
+            len(new_articles), len(all_fetched), skipped,
         )
         return new_articles
 
@@ -213,9 +262,12 @@ class FeedManager:
         try:
             resp = await client.get(url)
             resp.raise_for_status()
-            return _parse_feed_xml(resp.text, source, category)[:15]
+            articles = _parse_feed_xml(resp.text, source, category)[:15]
+            self._record_success(source)
+            return articles
         except Exception as e:
             logger.warning("Failed to fetch %s (%s): %s", source, url, e)
+            self._record_failure(source)
             return []
 
     def get_by_category(self, category: str) -> list[dict]:

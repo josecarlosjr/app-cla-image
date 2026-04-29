@@ -11,19 +11,14 @@ from pydantic import BaseModel
 
 import database as db
 
+from log_config import setup_logging
+
+setup_logging()
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-LOG_FILE = os.path.join(DATA_DIR, "agent.log")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler(),
-    ],
-)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Personal Intelligence Agent API", version="2.0")
