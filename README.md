@@ -18,13 +18,19 @@ Técnicas Computacionais do Sistema:
    
 Componente	       Modelo	      Uso
 
-Agent (chat)	Claude Sonnet	Conversação, raciocínio, tool use (loop de até 5 iterações)
-Pattern Matcher	Claude Sonnet	Análise semântica de clusters de notícias → gera texto estruturado
-News Analyzer	Claude Sonnet	Análise causa-efeito de notícias relevantes
-Crypto Scanner	Claude Sonnet	Avaliação oportunidade/armadilha de criptomoedas
-Digest	        Claude Sonnet	Síntese de dados brutos → briefing matinal/noturno
-Fact Extractor	Claude Haiku	Extração de entidades pessoais do usuário (forced tool use)
-Enrichment	    Claude Haiku	Extração de entidades e tópicos de artigos
+Agent (chat)	Claude Sonnet	Conversação, raciocínio, tool use (loop de até 5 iterações).
+
+Pattern Matcher	Claude Sonnet	Análise semântica de clusters de notícias → gera texto estruturado.
+
+News Analyzer	Claude Sonnet	Análise causa-efeito de notícias relevantes.
+
+Crypto Scanner	Claude Sonnet	Avaliação oportunidade/armadilha de criptomoedas.
+
+Digest	        Claude Sonnet	Síntese de dados brutos → briefing matinal/noturno.
+
+Fact Extractor	Claude Haiku	Extração de entidades pessoais do usuário (forced tool use).
+
+Enrichment	    Claude Haiku	Extração de entidades e tópicos de artigos.
 
 
 Nenhum fine-tuning — tudo usa prompting com estrutura forçada (templates *PADRAO:*, *CAUSA RAIZ:*, etc.).
