@@ -190,7 +190,7 @@ def _check_high_confidence_patterns(state: dict, user_facts: list[str]) -> list[
         if not matches and user_interest_keywords:
             continue
 
-        key = f"pattern_{hash(pattern.get('analysis', ''))}"
+        key = f"pattern_{pattern.get('id', pattern.get('timestamp', ''))}"
         if _can_notify(state, key, COOLDOWN_HOURS["pattern_alta"]):
             cats = ", ".join(pattern.get("categories", []))
             alerts.append(
