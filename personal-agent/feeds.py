@@ -25,7 +25,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Feed catalogue: 35+ feeds in 8 categories
+# Feed catalogue: 70+ feeds in 11 categories
 # ---------------------------------------------------------------------------
 
 FEEDS = {
@@ -39,6 +39,15 @@ FEEDS = {
         ("Olhar Digital", "https://olhardigital.com.br/feed/"),
         ("Hacker News", "https://hnrss.org/frontpage?count=30"),
         ("Reddit Technology", "https://www.reddit.com/r/technology/hot/.rss"),
+        ("WIRED", "https://www.wired.com/feed/rss"),
+        ("The Verge", "https://www.theverge.com/rss/index.xml"),
+        ("MIT Technology Review", "https://www.technologyreview.com/feed/"),
+        ("Tom's Hardware", "https://www.tomshardware.com/feeds/all"),
+        ("Engadget", "https://www.engadget.com/rss.xml"),
+        ("Gizmodo", "https://gizmodo.com/rss"),
+        ("Berkeley AI Research", "https://bair.berkeley.edu/blog/feed.xml"),
+        ("Google AI Blog", "https://blog.google/technology/ai/rss/"),
+        ("Microsoft Research", "https://www.microsoft.com/en-us/research/feed/"),
     ],
     "CIBERSEGURANCA": [
         ("The Hacker News", "https://feeds.feedburner.com/TheHackersNews"),
@@ -46,11 +55,38 @@ FEEDS = {
         ("CISA Advisories", "https://www.cisa.gov/cybersecurity-advisories/all.xml"),
         ("Bleeping Computer", "https://www.bleepingcomputer.com/feed/"),
         ("arXiv Cybersecurity", "https://rss.arxiv.org/rss/cs.CR"),
+        ("Krebs on Security", "https://krebsonsecurity.com/feed/"),
+        ("Schneier on Security", "https://www.schneier.com/blog/atom.xml"),
+        ("Malwarebytes Labs", "https://www.malwarebytes.com/blog/feed/index.xml"),
     ],
-    "CIENCIA_ENERGIA": [
+    "CIENCIA": [
         ("Inovacao Tecnologica", "https://www.inovacaotecnologica.com.br/noticias/rss.xml"),
         ("Science Direct", "https://rss.sciencedirect.com/publication/science/25895346"),
         ("arXiv AI", "https://rss.arxiv.org/rss/cs.AI"),
+        ("Science Daily", "https://www.sciencedaily.com/rss/all.xml"),
+        ("Chemical & Engineering News", "https://cen.acs.org/feeds/rss/topnews.xml"),
+        ("Science Magazine", "https://www.science.org/rss/news_current.xml"),
+    ],
+    "ENERGIA": [
+        ("CleanTechnica", "https://cleantechnica.com/feed/"),
+        ("PV Tech", "https://www.pv-tech.org/feed/"),
+        ("Utility Dive", "https://www.utilitydive.com/feeds/news/"),
+        ("Nature Energy", "https://www.nature.com/nenergy.rss"),
+        ("EnergyTrend", "https://www.energytrend.com/news/feed"),
+        ("Guardian Energy", "https://www.theguardian.com/environment/energy/rss"),
+        ("Oilprice", "https://oilprice.com/rss/main"),
+    ],
+    "MINERAIS_MINERACAO": [
+        ("Mining Technology", "https://www.mining-technology.com/feed/"),
+        ("The Northern Miner", "https://www.northernminer.com/feed/"),
+        ("Mining.com", "https://www.mining.com/feed/"),
+        ("Global Mining Review", "https://www.globalminingreview.com/rss"),
+    ],
+    "SUPPLY_CHAIN_LOGISTICA": [
+        ("Supply Chain Dive", "https://www.supplychaindive.com/feeds/news/"),
+        ("FreightWaves", "https://www.freightwaves.com/feed"),
+        ("The Loadstar", "https://theloadstar.com/feed/"),
+        ("Manufacturing Business Tech", "https://www.mbtmag.com/rss/all"),
     ],
     "GEOPOLITICA_FINANCAS": [
         ("BBC News World", "http://feeds.bbci.co.uk/news/world/rss.xml"),
@@ -62,6 +98,10 @@ FEEDS = {
     "DEFESA_ESPACO": [
         ("SpaceNews", "https://spacenews.com/feed/"),
         ("Telecompaper", "https://www.telecompaper.com/rss/headlines"),
+        ("Defense One", "https://www.defenseone.com/rss/all/"),
+        ("Breaking Defense", "https://breakingdefense.com/full-rss-feed/feed/"),
+        ("DefenceTalk", "https://www.defencetalk.com/feed/"),
+        ("The Aviationist", "https://theaviationist.com/feed/"),
     ],
     "DADOS": [
         ("FlowingData", "https://flowingdata.com/feed"),
@@ -78,6 +118,12 @@ FEEDS = {
         ("Nasdaq", "https://www.nasdaq.com/feed/nasdaq-original/rss.xml"),
         ("Reddit Stocks", "https://www.reddit.com/r/stocks/hot/.rss"),
         ("Reddit Investing", "https://www.reddit.com/r/investing/hot/.rss"),
+        ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+        ("Motley Fool", "https://www.fool.com/feed/index.aspx"),
+        ("Business Insider", "https://feeds.businessinsider.com/custom/all"),
+        ("ETF Trends", "https://www.etftrends.com/feed/"),
+        ("24/7 Wall St", "https://247wallst.com/feed/"),
+        ("Abnormal Returns", "https://abnormalreturns.com/feed/"),
     ],
 }
 
@@ -86,17 +132,35 @@ FEEDS = {
 # ---------------------------------------------------------------------------
 
 SOURCE_WEIGHTS = {
+    # Tier 3: peer-review, government advisories, established wire services
     "Reuters Technology": 3, "Reuters Business": 3,
     "IEEE Spectrum": 3, "ACM TechNews": 3, "Science Direct": 3,
+    "CISA Advisories": 3, "CNBC Investing": 3, "MarketWatch": 3, "Nasdaq": 3,
+    "MIT Technology Review": 3, "Nature Energy": 3, "Science Magazine": 3,
+    "Science Daily": 3, "Chemical & Engineering News": 3,
+    "Krebs on Security": 3, "Schneier on Security": 3,
+    "Defense One": 3, "Breaking Defense": 3,
+    "Berkeley AI Research": 3, "Google AI Blog": 3, "Microsoft Research": 3,
+    # Tier 2: established trade publications and quality blogs
     "BBC News World": 2, "TechCrunch": 2,
-    "Dark Reading": 2, "The Hacker News": 2,
+    "Dark Reading": 2, "The Hacker News": 2, "Bleeping Computer": 2,
+    "Malwarebytes Labs": 2,
     "SpaceNews": 2, "Ars Technica": 2,
     "G1 Tecnologia": 2, "G1 Mundo": 2,
     "DZone DevOps": 2, "DevOps.com": 2, "The New Stack": 2,
-    "CNBC Investing": 3, "MarketWatch": 3, "Nasdaq": 3,
     "Seeking Alpha": 2, "Hacker News": 2,
-    "Bleeping Computer": 2, "CISA Advisories": 3,
     "arXiv AI": 2, "arXiv Cybersecurity": 2,
+    "WIRED": 2, "The Verge": 2, "Engadget": 2, "Tom's Hardware": 2,
+    "Gizmodo": 2,
+    "CleanTechnica": 2, "PV Tech": 2, "Utility Dive": 2,
+    "EnergyTrend": 2, "Guardian Energy": 2, "Oilprice": 2,
+    "Mining Technology": 2, "The Northern Miner": 2, "Mining.com": 2,
+    "Global Mining Review": 2,
+    "Supply Chain Dive": 2, "FreightWaves": 2, "The Loadstar": 2,
+    "Manufacturing Business Tech": 2,
+    "DefenceTalk": 2, "The Aviationist": 2,
+    "Yahoo Finance": 2, "Motley Fool": 2, "Business Insider": 2,
+    "ETF Trends": 2, "24/7 Wall St": 2, "Abnormal Returns": 2,
 }
 DEFAULT_WEIGHT = 1
 

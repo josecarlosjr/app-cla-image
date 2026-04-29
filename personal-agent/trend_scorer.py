@@ -24,40 +24,7 @@ logger = logging.getLogger(__name__)
 NORM_FACTOR = 3.5
 TREND_THRESHOLD = 10
 
-CATEGORY_KEYWORDS = {
-    "chips_ia": [
-        "semiconductor", "gpu", "nvidia", "tsmc", "llm", "agi",
-        "ai chip", "intel", "amd", "chip", "foundry",
-    ],
-    "energia": [
-        "nuclear", "solar", "wind", "grid", "battery", "datacenter",
-        "energy", "power", "renewable", "smr",
-    ],
-    "minerais": [
-        "rare earth", "copper", "lithium", "cobalt", "tin",
-        "critical mineral", "mining",
-    ],
-    "geopolitica": [
-        "us china", "strait of hormuz", "nato", "sanctions", "brics",
-        "tariff", "trade war", "geopolit",
-    ],
-    "ciberseguranca": [
-        "apt", "zero-day", "ransomware", "cyber", "hack",
-        "vulnerability", "breach", "malware",
-    ],
-    "ciencia": [
-        "quantum", "fusion", "superconductor", "material science",
-        "physics", "research", "discovery",
-    ],
-    "espaco_defesa": [
-        "satellite", "hypersonic", "aukus", "space", "missile",
-        "defense", "orbit", "launch",
-    ],
-    "financas": [
-        "stock", "ecb", "recession", "inflation", "crypto", "etf",
-        "fed", "interest rate", "market", "ipo",
-    ],
-}
+from pattern_matcher import CATEGORY_KEYWORDS
 
 
 # ---------------------------------------------------------------------------

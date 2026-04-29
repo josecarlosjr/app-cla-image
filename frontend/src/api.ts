@@ -19,6 +19,7 @@ export type Job = {
 };
 
 export type Pattern = {
+  id: number;
   analysis: string;
   confidence: "ALTA" | "MEDIA" | "BAIXA";
   categories: string[];
