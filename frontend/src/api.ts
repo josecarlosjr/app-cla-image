@@ -142,3 +142,36 @@ export type SupplyChainImpact = {
   dependents: string[];
   dependencies: string[];
 };
+
+export type CrossPillarEvent = {
+  kind: "pattern" | "spike" | "correlated_chain" | "temporal";
+  id: string;
+  pillar: string;
+  category: string;
+  timestamp: string;
+  label: string;
+  confidence?: string;
+  source_count?: number;
+  ratio?: number;
+  signal?: string;
+  alert_type?: string;
+};
+
+export type CrossPillarChain = {
+  id?: number;
+  members_hash: string;
+  window_start: string;
+  window_end: string;
+  pillars: string[];
+  events: CrossPillarEvent[];
+  events_by_pillar?: Record<string, CrossPillarEvent[]>;
+  total_events?: number;
+  narrative?: string;
+  detected_at?: string;
+};
+
+export type CrossPillarActiveResponse = {
+  chains: CrossPillarChain[];
+  pillar_labels: Record<string, string>;
+  window_hours: number;
+};

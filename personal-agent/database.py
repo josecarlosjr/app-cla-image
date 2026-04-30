@@ -131,6 +131,19 @@ CREATE TABLE IF NOT EXISTS supply_chain_mentions (
 );
 CREATE INDEX IF NOT EXISTS idx_sc_mentions_node ON supply_chain_mentions(node_id);
 CREATE INDEX IF NOT EXISTS idx_sc_mentions_ts ON supply_chain_mentions(timestamp);
+
+CREATE TABLE IF NOT EXISTS cross_pillar_chains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    members_hash TEXT NOT NULL,
+    window_start TEXT NOT NULL,
+    window_end TEXT NOT NULL,
+    pillars_json TEXT NOT NULL,
+    events_json TEXT NOT NULL,
+    narrative TEXT DEFAULT '',
+    detected_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cpc_detected ON cross_pillar_chains(detected_at);
+CREATE INDEX IF NOT EXISTS idx_cpc_hash ON cross_pillar_chains(members_hash);
 """
 
 # ---------------------------------------------------------------------------
@@ -803,6 +816,76 @@ def prune_supply_chain_mentions(days: int = 30) -> None:
     with conn:
         conn.execute(
             "DELETE FROM supply_chain_mentions WHERE timestamp < ?", (cutoff,),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cross-pillar chains (Onda 9)
+# ---------------------------------------------------------------------------
+
+def insert_cross_pillar_chain(chain: dict) -> int:
+    conn = _db()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        cursor = conn.execute(
+            """INSERT INTO cross_pillar_chains
+               (members_hash, window_start, window_end, pillars_json,
+                events_json, narrative, detected_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                chain["members_hash"],
+                chain["window_start"],
+                chain["window_end"],
+                json.dumps(chain["pillars"], ensure_ascii=False),
+                json.dumps(chain["events"], ensure_ascii=False),
+                chain.get("narrative", ""),
+                now,
+            ),
+        )
+        return cursor.lastrowid or 0
+
+
+def chain_exists(members_hash: str, since_hours: int = 24) -> bool:
+    conn = _db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat()
+    row = conn.execute(
+        """SELECT 1 FROM cross_pillar_chains
+           WHERE members_hash = ? AND detected_at >= ? LIMIT 1""",
+        (members_hash, cutoff),
+    ).fetchone()
+    return row is not None
+
+
+def get_cross_pillar_chains(*, hours: int = 168, limit: int = 50) -> list[dict]:
+    conn = _db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    rows = conn.execute(
+        """SELECT * FROM cross_pillar_chains
+           WHERE detected_at >= ?
+           ORDER BY detected_at DESC LIMIT ?""",
+        (cutoff, limit),
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "members_hash": r["members_hash"],
+            "window_start": r["window_start"],
+            "window_end": r["window_end"],
+            "pillars": json.loads(r["pillars_json"]),
+            "events": json.loads(r["events_json"]),
+            "narrative": r["narrative"],
+            "detected_at": r["detected_at"],
+        }
+        for r in rows
+    ]
+
+
+def prune_cross_pillar_chains(days: int = 60) -> None:
+    conn = _db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with conn:
+        conn.execute(
+            "DELETE FROM cross_pillar_chains WHERE detected_at < ?", (cutoff,),
         )
 
 

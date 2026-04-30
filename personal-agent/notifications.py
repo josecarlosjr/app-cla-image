@@ -156,7 +156,11 @@ def _check_todo_notes(state: dict) -> list[str]:
     return alerts
 
 
-def _check_high_confidence_patterns(state: dict, user_facts: list[str]) -> list[str]:
+def _check_high_confidence_patterns(
+    state: dict, user_facts: list[str],
+    suppressed: set[str] | None = None,
+) -> list[str]:
+    suppressed = suppressed or set()
     patterns = db.get_patterns()
 
     user_interest_keywords = set()
@@ -187,6 +191,8 @@ def _check_high_confidence_patterns(state: dict, user_facts: list[str]) -> list[
             continue
 
         key = f"pattern_{pattern.get('id', pattern.get('timestamp', ''))}"
+        if key in suppressed:
+            continue
         if _can_notify(state, key, COOLDOWN_HOURS["pattern_alta"]):
             cats = ", ".join(pattern.get("categories", []))
             alerts.append(
@@ -198,13 +204,16 @@ def _check_high_confidence_patterns(state: dict, user_facts: list[str]) -> list[
     return alerts
 
 
-def _check_temporal_alerts(state: dict) -> list[str]:
+def _check_temporal_alerts(state: dict, suppressed: set[str] | None = None) -> list[str]:
     from temporal import get_temporal_summary
 
+    suppressed = suppressed or set()
     summary = get_temporal_summary()
     alerts = []
     for alert in summary.get("alerts", []):
         key = f"temporal_{alert['type']}_{alert['category']}"
+        if key in suppressed:
+            continue
         if _can_notify(state, key, COOLDOWN_HOURS["temporal"]):
             emoji = {"acceleration": "🔺", "deceleration": "🔻", "divergence": "🔀"}.get(
                 alert["type"], "📊"
@@ -214,17 +223,38 @@ def _check_temporal_alerts(state: dict) -> list[str]:
     return alerts
 
 
-def _check_supply_chain_alerts(state: dict) -> list[str]:
+def _check_supply_chain_alerts(
+    state: dict, suppressed: set[str] | None = None,
+) -> list[str]:
     from supply_chain_analyzer import analyze
 
+    suppressed = suppressed or set()
     result = analyze()
     alerts = []
     for alert in result.get("alerts", []):
         key = f"sc_{alert['type']}_{alert['node_id']}"
+        if key in suppressed:
+            continue
         if _can_notify(state, key, COOLDOWN_HOURS["supply_chain"]):
             alerts.append(alert["text"])
             _mark_sent(state, key)
     return alerts
+
+
+def _check_cross_pillar_chains(state: dict) -> tuple[list[str], set[str]]:
+    """Detect cross-pillar chains; return (alert_messages, suppressed_event_ids).
+
+    Suppressed IDs are events covered by a chain alert sent in this run or
+    within the last suppression window — individual checkers will skip them.
+    """
+    from cross_pillar import (
+        detect_and_persist_chains, format_chain_alert, get_suppressed_event_ids,
+    )
+
+    new_chains = detect_and_persist_chains()
+    alerts = [format_chain_alert(c) for c in new_chains]
+    suppressed = get_suppressed_event_ids()
+    return alerts, suppressed
 
 
 # ---------------------------------------------------------------------------
@@ -241,9 +271,15 @@ async def main():
     all_alerts: list[str] = []
     all_alerts.extend(_check_stale_jobs(state))
     all_alerts.extend(_check_todo_notes(state))
-    all_alerts.extend(_check_high_confidence_patterns(state, user_facts))
-    all_alerts.extend(_check_temporal_alerts(state))
-    all_alerts.extend(_check_supply_chain_alerts(state))
+
+    chain_alerts, suppressed_ids = _check_cross_pillar_chains(state)
+    all_alerts.extend(chain_alerts)
+
+    all_alerts.extend(
+        _check_high_confidence_patterns(state, user_facts, suppressed=suppressed_ids)
+    )
+    all_alerts.extend(_check_temporal_alerts(state, suppressed=suppressed_ids))
+    all_alerts.extend(_check_supply_chain_alerts(state, suppressed=suppressed_ids))
 
     if not all_alerts:
         logger.info("No proactive notifications to send.")

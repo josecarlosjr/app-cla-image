@@ -477,6 +477,33 @@ async def get_supply_chain_mentions_api(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/cross-pillar — chain detections (Onda 9)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/cross-pillar/chains")
+async def get_cross_pillar_chains(
+    hours: int = Query(168, description="Lookback window in hours"),
+    limit: int = Query(20, description="Max chains returned"),
+):
+    return {"chains": db.get_cross_pillar_chains(hours=hours, limit=limit)}
+
+
+@app.get("/api/cross-pillar/active")
+async def get_cross_pillar_active(
+    window_hours: int = Query(168, description="Window for live event collection"),
+):
+    """Live detection — runs detect_chains without persistence."""
+    from cross_pillar import detect_chains
+    from pillars import PILLAR_LABELS
+    chains = detect_chains(window_hours=window_hours)
+    return {
+        "chains": chains,
+        "pillar_labels": PILLAR_LABELS,
+        "window_hours": window_hours,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Entry point for standalone testing
 # ---------------------------------------------------------------------------
 
