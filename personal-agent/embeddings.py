@@ -15,7 +15,10 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
 
-from database import get_embeddings_batch, save_embeddings_batch, prune_embeddings
+from database import (
+    get_embeddings_batch, save_embeddings_batch, prune_embeddings,
+    rebuild_vec_index_for_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,22 @@ VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 VOYAGE_MODEL = "voyage-3-lite"
 VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_BATCH_SIZE = 128
+
+_version_reconciled = False
+
+
+def _reconcile_embedding_version_once() -> None:
+    """If the active embedding model differs from stored vectors, purge the old."""
+    global _version_reconciled
+    if _version_reconciled:
+        return
+    _version_reconciled = True
+    try:
+        kept = rebuild_vec_index_for_version(VOYAGE_MODEL)
+        logger.info("Embedding version reconciled: %d vectors kept (version=%s)",
+                    kept, VOYAGE_MODEL)
+    except Exception as e:
+        logger.warning("Version reconciliation skipped: %s", e)
 
 
 async def _voyage_embed(texts: list[str]) -> np.ndarray | None:
@@ -103,6 +122,8 @@ async def embed_texts_cached(
 
     if not VOYAGE_API_KEY:
         return _tfidf_embed(texts)
+
+    _reconcile_embedding_version_once()
 
     cacheable_urls = [u for u in urls if u]
     cached = get_embeddings_batch(cacheable_urls, VOYAGE_MODEL) if cacheable_urls else {}

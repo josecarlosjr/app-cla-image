@@ -23,10 +23,22 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
+try:
+    import sqlite_vec
+    _SQLITE_VEC_LIB_AVAILABLE = True
+except ImportError:
+    sqlite_vec = None
+    _SQLITE_VEC_LIB_AVAILABLE = False
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "agent.db")
 
+VOYAGE_EMBEDDING_DIM = 512
+EMBEDDING_VERSION_DEFAULT = "voyage-3-lite"
+
 logger = logging.getLogger(__name__)
+
+_VEC_AVAILABLE = False
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS articles (
@@ -70,8 +82,10 @@ CREATE TABLE IF NOT EXISTS embeddings (
     vector BLOB NOT NULL,
     model TEXT NOT NULL,
     dims INTEGER NOT NULL,
+    embedding_version TEXT NOT NULL DEFAULT 'v0',
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_embeddings_version ON embeddings(embedding_version);
 
 CREATE TABLE IF NOT EXISTS trend_scores (
     key TEXT PRIMARY KEY,
@@ -134,9 +148,56 @@ def _db() -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA synchronous=NORMAL")
+        _try_load_sqlite_vec(_conn)
         _conn.executescript(_SCHEMA)
+        _migrate_embeddings_schema(_conn)
+        _ensure_vec_table(_conn)
         _migrate_from_json()
     return _conn
+
+
+def _try_load_sqlite_vec(conn: sqlite3.Connection) -> None:
+    global _VEC_AVAILABLE
+    if not _SQLITE_VEC_LIB_AVAILABLE:
+        logger.warning("sqlite-vec lib not installed; falling back to brute-force similarity")
+        return
+    try:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        _VEC_AVAILABLE = True
+        logger.info("sqlite-vec loaded — ANN candidate search enabled")
+    except (sqlite3.OperationalError, AttributeError) as e:
+        logger.warning("sqlite-vec failed to load (%s); falling back to brute-force", e)
+
+
+def _migrate_embeddings_schema(conn: sqlite3.Connection) -> None:
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(embeddings)")}
+    if "embedding_version" not in cols:
+        with conn:
+            conn.execute(
+                "ALTER TABLE embeddings ADD COLUMN embedding_version TEXT NOT NULL DEFAULT 'v0'"
+            )
+        logger.info("Migrated embeddings table: added embedding_version column")
+
+
+def _ensure_vec_table(conn: sqlite3.Connection) -> None:
+    if not _VEC_AVAILABLE:
+        return
+    try:
+        with conn:
+            conn.execute(
+                f"""CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_vec USING vec0(
+                    url TEXT PRIMARY KEY,
+                    embedding FLOAT[{VOYAGE_EMBEDDING_DIM}] distance_metric=cosine
+                )"""
+            )
+    except sqlite3.OperationalError as e:
+        logger.warning("Could not create vec0 table: %s", e)
+
+
+def is_vec_available() -> bool:
+    return _VEC_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -416,11 +477,30 @@ def save_embeddings_batch(
     now = datetime.now(timezone.utc).isoformat()
     with conn:
         conn.executemany(
-            """INSERT OR REPLACE INTO embeddings (url, vector, model, dims, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            [(url, vec.tobytes(), model, vec.shape[0], now)
+            """INSERT OR REPLACE INTO embeddings
+               (url, vector, model, dims, embedding_version, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [(url, vec.astype(np.float32).tobytes(), model, vec.shape[0], model, now)
              for url, vec in url_vector_pairs],
         )
+
+    if not _VEC_AVAILABLE:
+        return
+    vec_pairs = [
+        (url, vec.astype(np.float32).tobytes())
+        for url, vec in url_vector_pairs
+        if vec.shape[0] == VOYAGE_EMBEDDING_DIM
+    ]
+    if not vec_pairs:
+        return
+    try:
+        with conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO embeddings_vec (url, embedding) VALUES (?, ?)",
+                vec_pairs,
+            )
+    except sqlite3.OperationalError as e:
+        logger.warning("vec0 insert failed: %s", e)
 
 
 def prune_embeddings(max_entries: int = 25000) -> None:
@@ -429,11 +509,103 @@ def prune_embeddings(max_entries: int = 25000) -> None:
     if count <= max_entries:
         return
     with conn:
+        cutoff_row = conn.execute(
+            "SELECT created_at FROM embeddings ORDER BY created_at DESC LIMIT 1 OFFSET ?",
+            (max_entries - 1,),
+        ).fetchone()
+        if not cutoff_row:
+            return
+        cutoff = cutoff_row["created_at"]
+        stale_urls = [
+            r["url"] for r in conn.execute(
+                "SELECT url FROM embeddings WHERE created_at < ?", (cutoff,)
+            )
+        ]
         conn.execute(
-            """DELETE FROM embeddings WHERE url NOT IN
-               (SELECT url FROM embeddings ORDER BY created_at DESC LIMIT ?)""",
-            (max_entries,),
+            "DELETE FROM embeddings WHERE created_at < ?", (cutoff,),
         )
+        if _VEC_AVAILABLE and stale_urls:
+            try:
+                for i in range(0, len(stale_urls), 500):
+                    batch = stale_urls[i:i + 500]
+                    placeholders = ",".join("?" * len(batch))
+                    conn.execute(
+                        f"DELETE FROM embeddings_vec WHERE url IN ({placeholders})",
+                        batch,
+                    )
+            except sqlite3.OperationalError as e:
+                logger.warning("vec0 prune failed: %s", e)
+
+
+def find_similar_embeddings(
+    query_vec: np.ndarray, k: int = 50,
+) -> list[tuple[str, float]]:
+    """Top-K nearest neighbours by cosine distance via sqlite-vec.
+
+    Returns [(url, distance), ...] sorted by distance ascending.
+    Empty list if sqlite-vec is unavailable or vec table empty.
+    """
+    if not _VEC_AVAILABLE:
+        return []
+    if query_vec.shape[0] != VOYAGE_EMBEDDING_DIM:
+        return []
+    conn = _db()
+    try:
+        rows = conn.execute(
+            """SELECT url, distance FROM embeddings_vec
+               WHERE embedding MATCH ? AND k = ?
+               ORDER BY distance""",
+            (query_vec.astype(np.float32).tobytes(), int(k)),
+        ).fetchall()
+        return [(r["url"], float(r["distance"])) for r in rows]
+    except sqlite3.OperationalError as e:
+        logger.warning("vec0 KNN query failed: %s", e)
+        return []
+
+
+def rebuild_vec_index_for_version(target_version: str) -> int:
+    """Drop incompatible vectors and rebuild vec0 from canonical embeddings table.
+
+    Called when the embedding model/version changes — purges all rows whose
+    embedding_version does not match target_version, leaving only consistent
+    vectors. Returns number of rows kept.
+    """
+    conn = _db()
+    with conn:
+        deleted_urls = [
+            r["url"] for r in conn.execute(
+                "SELECT url FROM embeddings WHERE embedding_version != ?",
+                (target_version,),
+            )
+        ]
+        if deleted_urls:
+            conn.execute(
+                "DELETE FROM embeddings WHERE embedding_version != ?",
+                (target_version,),
+            )
+            logger.info(
+                "Pruned %d embeddings with version != %s",
+                len(deleted_urls), target_version,
+            )
+
+    if not _VEC_AVAILABLE:
+        return conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+
+    try:
+        with conn:
+            if deleted_urls:
+                for i in range(0, len(deleted_urls), 500):
+                    batch = deleted_urls[i:i + 500]
+                    placeholders = ",".join("?" * len(batch))
+                    conn.execute(
+                        f"DELETE FROM embeddings_vec WHERE url IN ({placeholders})",
+                        batch,
+                    )
+        kept = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+        return kept
+    except sqlite3.OperationalError as e:
+        logger.warning("rebuild_vec_index failed: %s", e)
+        return 0
 
 
 # ---------------------------------------------------------------------------
