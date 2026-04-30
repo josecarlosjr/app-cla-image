@@ -41,6 +41,7 @@ COOLDOWN_HOURS = {
     "pattern_alta": 12,
     "note_todo": 24,
     "temporal": 12,
+    "supply_chain": 12,
 }
 JOB_STALE_DAYS = 7
 JOB_ACTIVE_STATUSES = {"applied", "interview", "pending"}
@@ -213,6 +214,19 @@ def _check_temporal_alerts(state: dict) -> list[str]:
     return alerts
 
 
+def _check_supply_chain_alerts(state: dict) -> list[str]:
+    from supply_chain_analyzer import analyze
+
+    result = analyze()
+    alerts = []
+    for alert in result.get("alerts", []):
+        key = f"sc_{alert['type']}_{alert['node_id']}"
+        if _can_notify(state, key, COOLDOWN_HOURS["supply_chain"]):
+            alerts.append(alert["text"])
+            _mark_sent(state, key)
+    return alerts
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -229,6 +243,7 @@ async def main():
     all_alerts.extend(_check_todo_notes(state))
     all_alerts.extend(_check_high_confidence_patterns(state, user_facts))
     all_alerts.extend(_check_temporal_alerts(state))
+    all_alerts.extend(_check_supply_chain_alerts(state))
 
     if not all_alerts:
         logger.info("No proactive notifications to send.")
