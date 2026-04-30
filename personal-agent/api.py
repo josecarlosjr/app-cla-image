@@ -442,6 +442,13 @@ async def get_supply_chain():
     return get_full_graph()
 
 
+@app.post("/api/supply-chain/extract")
+async def extract_supply_chain_mentions():
+    from supply_chain_extractor import extract_mentions
+    result = await extract_mentions()
+    return result
+
+
 @app.get("/api/supply-chain/impact/{node_id}")
 async def get_supply_chain_impact(node_id: str):
     from supply_chain import get_impact_chain, get_dependents, get_dependencies
