@@ -372,6 +372,11 @@ async def main():
     prune_patterns(MAX_PATTERNS_STORED)
     logger.info("Pattern matcher done. %d new patterns.", new_count)
 
+    logger.info("Running supply chain mention extraction...")
+    from supply_chain_extractor import extract_mentions
+    sc_result = await extract_mentions()
+    logger.info("Supply chain: %s", sc_result)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
