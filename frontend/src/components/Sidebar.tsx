@@ -7,6 +7,7 @@ const items = [
   { to: "/news", label: "News & Patterns", icon: "≡" },
   { to: "/crypto", label: "Crypto", icon: "◬" },
   { to: "/jobs", label: "Jobs", icon: "◰" },
+  { to: "/supply-chain", label: "Supply Chain", icon: "⛓" },
   { to: "/settings", label: "Settings", icon: "⚙" },
 ];
 
@@ -39,7 +40,7 @@ export default function Sidebar() {
         </ul>
       </nav>
       <div className="p-4 border-t border-slate-800 text-xs text-slate-500">
-        v2.0 · phase 3
+        v2.0 · phase 4
       </div>
     </aside>
   );

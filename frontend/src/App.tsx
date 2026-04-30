@@ -7,6 +7,7 @@ import News from "./pages/News";
 import Crypto from "./pages/Crypto";
 import Jobs from "./pages/Jobs";
 import Settings from "./pages/Settings";
+import SupplyChain from "./pages/SupplyChain";
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/news" element={<News />} />
         <Route path="/crypto" element={<Crypto />} />
         <Route path="/jobs" element={<Jobs />} />
+        <Route path="/supply-chain" element={<SupplyChain />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

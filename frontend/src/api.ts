@@ -92,3 +92,53 @@ export type MemoryStats = {
   facts_count: number;
   facts: string[];
 };
+
+export type SupplyChainNode = {
+  id: string;
+  name: string;
+  type: "mineral" | "component" | "product" | "infra";
+  keywords: string[];
+  mentions_7d: number;
+  sentiments: Record<string, number>;
+};
+
+export type SupplyChainEdge = {
+  src: string;
+  dst: string;
+  relation: string;
+  weight: number;
+};
+
+export type SupplyChainGraph = {
+  nodes: SupplyChainNode[];
+  edges: SupplyChainEdge[];
+};
+
+export type SupplyChainSpike = {
+  node_id: string;
+  total_24h: number;
+  daily_avg_7d: number;
+  ratio: number;
+  dominant_signal: "negative" | "positive" | "neutral";
+  sentiments: Record<string, number>;
+};
+
+export type SupplyChainAlert = {
+  type: "spike" | "propagation" | "correlated_chain";
+  node_id: string;
+  text: string;
+};
+
+export type SupplyChainAnalysis = {
+  spikes: SupplyChainSpike[];
+  propagated_risks: any[];
+  correlated_chains: any[];
+  alerts: SupplyChainAlert[];
+};
+
+export type SupplyChainImpact = {
+  node_id: string;
+  impact_chain: { from: string; to: string; depth: number }[];
+  dependents: string[];
+  dependencies: string[];
+};
