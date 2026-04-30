@@ -12,6 +12,7 @@ from embeddings import embed_texts_cached, cosine_similarity
 from enrichment import enrich_articles, entity_topic_score
 from database import (
     insert_pattern, get_patterns, get_pattern_article_titles, prune_patterns,
+    find_similar_embeddings, is_vec_available,
 )
 
 from log_config import setup_logging
@@ -127,6 +128,9 @@ def _classify_article(article: dict) -> list[str]:
 # Semantic clustering (Voyage AI with TF-IDF fallback)
 # ---------------------------------------------------------------------------
 
+VEC_TOPK_CANDIDATES = 50
+
+
 async def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
     if len(articles) < 3:
         return []
@@ -144,12 +148,22 @@ async def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
     if embs.size == 0:
         return []
 
-    sim_matrix = cosine_similarity(embs)
-
     if is_semantic:
         await enrich_articles(articles, max_new=ENRICH_MAX_NEW_PER_RUN)
 
     base_threshold = SEMANTIC_SIMILARITY_THRESHOLD if is_semantic else TFIDF_SIMILARITY_THRESHOLD
+
+    use_vec = is_semantic and is_vec_available() and all(urls)
+    if use_vec:
+        return _cluster_via_vec(articles, embs, urls, base_threshold)
+
+    return _cluster_via_brute_force(articles, embs, is_semantic, base_threshold)
+
+
+def _cluster_via_brute_force(
+    articles: list[dict], embs, is_semantic: bool, base_threshold: float,
+) -> list[list[dict]]:
+    sim_matrix = cosine_similarity(embs)
 
     def is_similar(i: int, j: int) -> bool:
         sem = float(sim_matrix[i][j])
@@ -175,6 +189,53 @@ async def _cluster_articles(articles: list[dict]) -> list[list[dict]]:
         if len(cluster) >= 2:
             clusters.append(cluster)
 
+    return [[articles[i] for i in idx_list] for idx_list in clusters]
+
+
+def _cluster_via_vec(
+    articles: list[dict], embs, urls: list[str | None], base_threshold: float,
+) -> list[list[dict]]:
+    """Top-K candidate filtering via sqlite-vec.
+
+    For each unassigned article, fetches top-K nearest neighbours by cosine
+    distance from the persistent vec0 index, then applies the same threshold
+    + entity-topic boost rules as brute force. Replaces O(n^2) with O(n*K).
+    """
+    n = len(articles)
+    url_to_idx = {u: i for i, u in enumerate(urls) if u}
+    max_distance_strict = 1.0 - base_threshold
+    max_distance_boost = 1.0 - SEMANTIC_BOOSTED_THRESHOLD
+
+    assigned = [False] * n
+    clusters: list[list[int]] = []
+
+    for i in range(n):
+        if assigned[i]:
+            continue
+        cluster = [i]
+        assigned[i] = True
+
+        candidates = find_similar_embeddings(embs[i], k=VEC_TOPK_CANDIDATES)
+
+        for cand_url, dist in candidates:
+            j = url_to_idx.get(cand_url)
+            if j is None or j == i or assigned[j]:
+                continue
+            if dist <= max_distance_strict:
+                cluster.append(j)
+                assigned[j] = True
+            elif dist <= max_distance_boost:
+                if entity_topic_score(articles[i], articles[j]) >= ENTITY_TOPIC_FLOOR:
+                    cluster.append(j)
+                    assigned[j] = True
+
+        if len(cluster) >= 2:
+            clusters.append(cluster)
+
+    logger.info(
+        "Clustering via sqlite-vec: %d articles -> %d clusters (top-%d candidates each)",
+        n, len(clusters), VEC_TOPK_CANDIDATES,
+    )
     return [[articles[i] for i in idx_list] for idx_list in clusters]
 
 
