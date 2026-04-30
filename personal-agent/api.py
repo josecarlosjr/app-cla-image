@@ -319,6 +319,7 @@ async def get_map_nodes():
     for cat in [
         "chips_ia", "energia", "minerais", "geopolitica",
         "ciberseguranca", "ciencia", "espaco_defesa", "financas",
+        "cadeia_suprimentos",
     ]:
         info = scores.get(cat, {})
         nodes.append({
@@ -429,6 +430,37 @@ async def get_memory_stats():
             "facts": facts,
         }
     return {"total_messages": 0, "user_messages": 0, "assistant_messages": 0, "facts_count": 0, "facts": []}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/supply-chain — full knowledge graph with mention signals
+# ---------------------------------------------------------------------------
+
+@app.get("/api/supply-chain")
+async def get_supply_chain():
+    from supply_chain import get_full_graph
+    return get_full_graph()
+
+
+@app.get("/api/supply-chain/impact/{node_id}")
+async def get_supply_chain_impact(node_id: str):
+    from supply_chain import get_impact_chain, get_dependents, get_dependencies
+    return {
+        "node_id": node_id,
+        "impact_chain": get_impact_chain(node_id),
+        "dependents": get_dependents(node_id),
+        "dependencies": get_dependencies(node_id),
+    }
+
+
+@app.get("/api/supply-chain/mentions")
+async def get_supply_chain_mentions_api(
+    node_id: str = Query("", description="Filter by node"),
+    hours: int = Query(168, description="Lookback window in hours"),
+):
+    mentions = db.get_supply_chain_mentions(node_id=node_id, hours=hours)
+    counts = db.get_supply_chain_mention_counts(hours=hours)
+    return {"mentions": mentions[:100], "counts": counts}
 
 
 # ---------------------------------------------------------------------------
