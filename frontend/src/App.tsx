@@ -9,6 +9,7 @@ import Jobs from "./pages/Jobs";
 import Settings from "./pages/Settings";
 import SupplyChain from "./pages/SupplyChain";
 import GraphReview from "./pages/GraphReview";
+import Backtesting from "./pages/Backtesting";
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/jobs" element={<Jobs />} />
         <Route path="/supply-chain" element={<SupplyChain />} />
         <Route path="/graph" element={<GraphReview />} />
+        <Route path="/backtesting" element={<Backtesting />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

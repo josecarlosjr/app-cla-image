@@ -177,6 +177,37 @@ CREATE TABLE IF NOT EXISTS graph_relationships (
 CREATE INDEX IF NOT EXISTS idx_gr_status ON graph_relationships(status);
 CREATE INDEX IF NOT EXISTS idx_gr_subject ON graph_relationships(subject_id);
 CREATE INDEX IF NOT EXISTS idx_gr_object ON graph_relationships(object_id);
+
+CREATE TABLE IF NOT EXISTS system_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_type TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    data_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snap_type_time ON system_snapshots(snapshot_type, captured_at);
+
+CREATE TABLE IF NOT EXISTS event_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    notes TEXT DEFAULT '',
+    event_timestamp TEXT DEFAULT '',
+    marked_at TEXT NOT NULL,
+    UNIQUE (event_type, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_outcomes_type ON event_outcomes(event_type);
+CREATE INDEX IF NOT EXISTS idx_outcomes_outcome ON event_outcomes(outcome);
+
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    window_start TEXT NOT NULL,
+    window_end TEXT NOT NULL,
+    config_json TEXT DEFAULT '{}',
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_backtest_created ON backtest_runs(created_at);
 """
 
 # ---------------------------------------------------------------------------
@@ -329,9 +360,26 @@ def clear_stale_scores(days: int = 7) -> None:
         )
 
 
-def prune_articles(max_rows: int = 2000) -> None:
+def prune_articles(max_rows: int = 2000, retention_days: int = 0) -> None:
+    """Prune articles by row cap or by age.
+
+    When retention_days > 0, drops articles older than that many days
+    (Onda 11: long-term retention for backtesting). Otherwise applies the
+    legacy fixed-row cap.
+    """
     conn = _db()
     count = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+    if retention_days > 0:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        with conn:
+            cursor = conn.execute(
+                "DELETE FROM articles WHERE fetched_at < ?", (cutoff,),
+            )
+            if cursor.rowcount > 0:
+                logger.info(
+                    "Pruned %d articles older than %d days", cursor.rowcount, retention_days,
+                )
+        return
     if count <= max_rows:
         return
     with conn:
@@ -1077,6 +1125,287 @@ def get_graph_for_display(status: str = "approved") -> dict:
     entities = get_graph_entities(status=status, limit=500)
     relationships = get_graph_relationships(status=status, limit=500)
     return {"entities": entities, "relationships": relationships}
+
+
+# ---------------------------------------------------------------------------
+# System snapshots (Onda 11) — capture state-over-time for backtesting
+# ---------------------------------------------------------------------------
+
+def insert_snapshot(snapshot_type: str, data: dict) -> int:
+    conn = _db()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        cursor = conn.execute(
+            """INSERT INTO system_snapshots (snapshot_type, captured_at, data_json)
+               VALUES (?, ?, ?)""",
+            (snapshot_type, now, json.dumps(data, ensure_ascii=False, default=str)),
+        )
+        return cursor.lastrowid or 0
+
+
+def get_snapshots(
+    *, snapshot_type: str = "", days: int = 30, limit: int = 100,
+) -> list[dict]:
+    conn = _db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    clauses = ["captured_at >= ?"]
+    params: list = [cutoff]
+    if snapshot_type:
+        clauses.append("snapshot_type = ?")
+        params.append(snapshot_type)
+    where = f"WHERE {' AND '.join(clauses)}"
+    rows = conn.execute(
+        f"""SELECT id, snapshot_type, captured_at, data_json
+            FROM system_snapshots {where}
+            ORDER BY captured_at DESC LIMIT ?""",
+        params + [limit],
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "snapshot_type": r["snapshot_type"],
+            "captured_at": r["captured_at"],
+            "data": json.loads(r["data_json"]),
+        }
+        for r in rows
+    ]
+
+
+def get_snapshot_at(snapshot_type: str, target_iso: str) -> dict | None:
+    """Return the snapshot of the given type closest-before target time."""
+    conn = _db()
+    row = conn.execute(
+        """SELECT id, snapshot_type, captured_at, data_json FROM system_snapshots
+           WHERE snapshot_type = ? AND captured_at <= ?
+           ORDER BY captured_at DESC LIMIT 1""",
+        (snapshot_type, target_iso),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "snapshot_type": row["snapshot_type"],
+        "captured_at": row["captured_at"],
+        "data": json.loads(row["data_json"]),
+    }
+
+
+def prune_snapshots(days: int = 365) -> None:
+    conn = _db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with conn:
+        conn.execute(
+            "DELETE FROM system_snapshots WHERE captured_at < ?", (cutoff,),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Event outcomes (Onda 11) — user labels for signal quality measurement
+# ---------------------------------------------------------------------------
+
+def upsert_outcome(
+    event_type: str,
+    event_id: str,
+    outcome: str,
+    notes: str = "",
+    event_timestamp: str = "",
+) -> int:
+    conn = _db()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        existing = conn.execute(
+            "SELECT id FROM event_outcomes WHERE event_type = ? AND event_id = ?",
+            (event_type, event_id),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE event_outcomes SET outcome = ?, notes = ?, marked_at = ?
+                   WHERE id = ?""",
+                (outcome, notes, now, existing["id"]),
+            )
+            return existing["id"]
+        cursor = conn.execute(
+            """INSERT INTO event_outcomes
+               (event_type, event_id, outcome, notes, event_timestamp, marked_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (event_type, event_id, outcome, notes, event_timestamp, now),
+        )
+        return cursor.lastrowid or 0
+
+
+def get_outcomes(
+    *, event_type: str = "", outcome: str = "", limit: int = 200,
+) -> list[dict]:
+    conn = _db()
+    clauses: list[str] = []
+    params: list = []
+    if event_type:
+        clauses.append("event_type = ?")
+        params.append(event_type)
+    if outcome:
+        clauses.append("outcome = ?")
+        params.append(outcome)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"""SELECT * FROM event_outcomes {where}
+            ORDER BY marked_at DESC LIMIT ?""",
+        params + [limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_outcome_for(event_type: str, event_id: str) -> dict | None:
+    conn = _db()
+    row = conn.execute(
+        "SELECT * FROM event_outcomes WHERE event_type = ? AND event_id = ?",
+        (event_type, event_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_quality_metrics(*, days: int = 90) -> dict:
+    """Aggregate outcomes by type → precision / counts."""
+    conn = _db()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        """SELECT event_type, outcome, COUNT(*) as cnt
+           FROM event_outcomes
+           WHERE marked_at >= ?
+           GROUP BY event_type, outcome""",
+        (cutoff,),
+    ).fetchall()
+    by_type: dict[str, dict] = {}
+    for r in rows:
+        et = r["event_type"]
+        bucket = by_type.setdefault(
+            et, {"true_positive": 0, "false_positive": 0, "unclear": 0, "total": 0},
+        )
+        bucket[r["outcome"]] = r["cnt"]
+        bucket["total"] += r["cnt"]
+    for et, b in by_type.items():
+        labelled = b["true_positive"] + b["false_positive"]
+        b["precision"] = (
+            round(b["true_positive"] / labelled, 3) if labelled > 0 else None
+        )
+    return {"window_days": days, "by_type": by_type}
+
+
+# ---------------------------------------------------------------------------
+# Backtest runs (Onda 11)
+# ---------------------------------------------------------------------------
+
+def insert_backtest_run(
+    window_start: str, window_end: str, config: dict, result: dict,
+) -> int:
+    conn = _db()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        cursor = conn.execute(
+            """INSERT INTO backtest_runs
+               (window_start, window_end, config_json, result_json, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                window_start, window_end,
+                json.dumps(config, ensure_ascii=False, default=str),
+                json.dumps(result, ensure_ascii=False, default=str),
+                now,
+            ),
+        )
+        return cursor.lastrowid or 0
+
+
+def get_backtest_runs(*, limit: int = 20) -> list[dict]:
+    conn = _db()
+    rows = conn.execute(
+        """SELECT id, window_start, window_end, config_json, result_json, created_at
+           FROM backtest_runs ORDER BY created_at DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "window_start": r["window_start"],
+            "window_end": r["window_end"],
+            "config": json.loads(r["config_json"] or "{}"),
+            "result": json.loads(r["result_json"]),
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def get_backtest_run(run_id: int) -> dict | None:
+    conn = _db()
+    row = conn.execute(
+        """SELECT id, window_start, window_end, config_json, result_json, created_at
+           FROM backtest_runs WHERE id = ?""",
+        (run_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "window_start": row["window_start"],
+        "window_end": row["window_end"],
+        "config": json.loads(row["config_json"] or "{}"),
+        "result": json.loads(row["result_json"]),
+        "created_at": row["created_at"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Historical queries (Onda 11) — used by backtest replay
+# ---------------------------------------------------------------------------
+
+def get_articles_in_window(
+    *, start_iso: str, end_iso: str, category: str = "", limit: int = 5000,
+) -> list[dict]:
+    conn = _db()
+    clauses = ["fetched_at >= ?", "fetched_at < ?"]
+    params: list = [start_iso, end_iso]
+    if category:
+        clauses.append("category = ?")
+        params.append(category)
+    where = f"WHERE {' AND '.join(clauses)}"
+    rows = conn.execute(
+        f"""SELECT * FROM articles {where}
+            ORDER BY fetched_at ASC LIMIT ?""",
+        params + [limit],
+    ).fetchall()
+    return [_row_to_article(r) for r in rows]
+
+
+def get_patterns_in_window(*, start_iso: str, end_iso: str) -> list[dict]:
+    conn = _db()
+    rows = conn.execute(
+        """SELECT * FROM patterns WHERE timestamp >= ? AND timestamp < ?
+           ORDER BY timestamp ASC""",
+        (start_iso, end_iso),
+    ).fetchall()
+    return [_row_to_pattern(r) for r in rows]
+
+
+def get_chains_in_window(*, start_iso: str, end_iso: str) -> list[dict]:
+    conn = _db()
+    rows = conn.execute(
+        """SELECT * FROM cross_pillar_chains
+           WHERE detected_at >= ? AND detected_at < ?
+           ORDER BY detected_at ASC""",
+        (start_iso, end_iso),
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "members_hash": r["members_hash"],
+            "window_start": r["window_start"],
+            "window_end": r["window_end"],
+            "pillars": json.loads(r["pillars_json"]),
+            "events": json.loads(r["events_json"]),
+            "narrative": r["narrative"],
+            "detected_at": r["detected_at"],
+        }
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -143,6 +143,70 @@ export type SupplyChainImpact = {
   dependencies: string[];
 };
 
+export type BacktestTick = {
+  at: string;
+  articles_visible: number;
+  articles_by_category: Record<string, number>;
+  patterns_visible: number;
+  patterns_by_confidence: Record<string, number>;
+  chains_visible: number;
+  chain_pillars: string[][];
+};
+
+export type BacktestResult = {
+  window_start: string;
+  window_end: string;
+  ticks: BacktestTick[];
+  summary: {
+    tick_count: number;
+    eval_step_hours: number;
+    pattern_lookback_hours: number;
+    total_articles_observed: number;
+    total_patterns_observed: number;
+    total_chains_observed: number;
+  };
+  quality?: QualityMetrics;
+  outcomes_in_window?: Record<string, number>;
+  run_id?: number;
+};
+
+export type BacktestRun = {
+  id: number;
+  window_start: string;
+  window_end: string;
+  config: Record<string, any>;
+  result: BacktestResult;
+  created_at: string;
+};
+
+export type SystemSnapshot = {
+  id: number;
+  snapshot_type: string;
+  captured_at: string;
+  data: any;
+};
+
+export type EventOutcome = {
+  id: number;
+  event_type: string;
+  event_id: string;
+  outcome: "true_positive" | "false_positive" | "unclear";
+  notes: string;
+  event_timestamp: string;
+  marked_at: string;
+};
+
+export type QualityMetrics = {
+  window_days: number;
+  by_type: Record<string, {
+    true_positive: number;
+    false_positive: number;
+    unclear: number;
+    total: number;
+    precision: number | null;
+  }>;
+};
+
 export type GraphEntity = {
   id: number;
   name: string;
