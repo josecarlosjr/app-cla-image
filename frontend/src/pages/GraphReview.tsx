@@ -119,8 +119,9 @@ export default function GraphReview() {
         `Extraidos: ${res.data.extracted} artigos, ${res.data.entities} entidades, ${res.data.relationships} relacoes`
       );
       await load();
-    } catch (e) {
-      setExtractResult("Erro na extracao");
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || "erro desconhecido";
+      setExtractResult(`Erro na extracao: ${detail}`);
       console.error(e);
     } finally {
       setExtracting(false);

@@ -508,11 +508,15 @@ class BacktestBody(BaseModel):
 async def run_backtest_endpoint(body: BacktestBody):
     from backtest import run_backtest
     days = max(1, min(body.days_back, 365))
-    return run_backtest(
-        days_back=days,
-        eval_step_hours=max(1, body.eval_step_hours),
-        pattern_lookback_hours=max(1, body.pattern_lookback_hours),
-    )
+    try:
+        return run_backtest(
+            days_back=days,
+            eval_step_hours=max(1, body.eval_step_hours),
+            pattern_lookback_hours=max(1, body.pattern_lookback_hours),
+        )
+    except Exception as e:
+        logger.error("Backtest run failed: %s", e)
+        raise HTTPException(500, f"Backtest failed: {e}")
 
 
 @app.get("/api/backtest/runs")
@@ -531,7 +535,11 @@ async def get_backtest_run_detail(run_id: int):
 @app.post("/api/snapshots/capture")
 async def trigger_snapshot_capture():
     from backtest import capture_snapshots
-    return {"captured": capture_snapshots()}
+    try:
+        return {"captured": capture_snapshots()}
+    except Exception as e:
+        logger.error("Snapshot capture failed: %s", e)
+        raise HTTPException(500, f"Snapshot capture failed: {e}")
 
 
 @app.get("/api/snapshots")
@@ -669,8 +677,12 @@ async def batch_review_relationships(body: dict):
 @app.post("/api/graph/extract")
 async def trigger_graph_extraction():
     from graph_extractor import extract_graph_triples
-    result = await extract_graph_triples()
-    return result
+    try:
+        result = await extract_graph_triples()
+        return result
+    except Exception as e:
+        logger.error("Graph extraction failed: %s", e)
+        raise HTTPException(500, f"Graph extraction failed: {e}")
 
 
 @app.get("/api/graph/full")

@@ -52,8 +52,9 @@ export default function Backtesting() {
       setLatest(res.data);
       await loadAll();
       setStatusMsg(`Run #${res.data.run_id} concluido — ${res.data.summary.tick_count} ticks`);
-    } catch (e) {
-      setStatusMsg("Erro ao rodar backtest");
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || "erro desconhecido";
+      setStatusMsg(`Erro ao rodar backtest: ${detail}`);
       console.error(e);
     } finally {
       setRunning(false);
@@ -68,8 +69,9 @@ export default function Backtesting() {
       const types = Object.keys(res.data.captured).join(", ");
       setStatusMsg(`Snapshots capturados: ${types}`);
       await loadAll();
-    } catch (e) {
-      setStatusMsg("Erro ao capturar snapshot");
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || "erro desconhecido";
+      setStatusMsg(`Erro ao capturar snapshot: ${detail}`);
       console.error(e);
     } finally {
       setCapturing(false);
