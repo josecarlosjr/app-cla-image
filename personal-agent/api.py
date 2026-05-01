@@ -489,6 +489,102 @@ async def get_cross_pillar_chains(
 
 
 # ---------------------------------------------------------------------------
+# Backtest, Snapshots & Outcomes (Onda 11)
+# ---------------------------------------------------------------------------
+
+class OutcomeBody(BaseModel):
+    outcome: str  # true_positive | false_positive | unclear
+    notes: str = ""
+    event_timestamp: str = ""
+
+
+class BacktestBody(BaseModel):
+    days_back: int = 30
+    eval_step_hours: int = 24
+    pattern_lookback_hours: int = 48
+
+
+@app.post("/api/backtest/run")
+async def run_backtest_endpoint(body: BacktestBody):
+    from backtest import run_backtest
+    days = max(1, min(body.days_back, 365))
+    return run_backtest(
+        days_back=days,
+        eval_step_hours=max(1, body.eval_step_hours),
+        pattern_lookback_hours=max(1, body.pattern_lookback_hours),
+    )
+
+
+@app.get("/api/backtest/runs")
+async def list_backtest_runs(limit: int = Query(20, description="Max runs returned")):
+    return {"runs": db.get_backtest_runs(limit=limit)}
+
+
+@app.get("/api/backtest/runs/{run_id}")
+async def get_backtest_run_detail(run_id: int):
+    run = db.get_backtest_run(run_id)
+    if not run:
+        raise HTTPException(404, f"Backtest run {run_id} not found")
+    return run
+
+
+@app.post("/api/snapshots/capture")
+async def trigger_snapshot_capture():
+    from backtest import capture_snapshots
+    return {"captured": capture_snapshots()}
+
+
+@app.get("/api/snapshots")
+async def get_snapshots_endpoint(
+    snapshot_type: str = Query("", description="Filter: trends, cross_pillar, supply_chain, graph"),
+    days: int = Query(30, description="Lookback in days"),
+    limit: int = Query(50, description="Max snapshots"),
+):
+    return {
+        "snapshots": db.get_snapshots(
+            snapshot_type=snapshot_type, days=days, limit=limit,
+        ),
+    }
+
+
+@app.post("/api/outcomes/{event_type}/{event_id}")
+async def mark_outcome(event_type: str, event_id: str, body: OutcomeBody):
+    if body.outcome not in ("true_positive", "false_positive", "unclear"):
+        raise HTTPException(
+            400, "outcome must be true_positive, false_positive or unclear",
+        )
+    oid = db.upsert_outcome(
+        event_type=event_type,
+        event_id=event_id,
+        outcome=body.outcome,
+        notes=body.notes,
+        event_timestamp=body.event_timestamp,
+    )
+    return {"id": oid, "event_type": event_type, "event_id": event_id,
+            "outcome": body.outcome}
+
+
+@app.get("/api/outcomes")
+async def list_outcomes(
+    event_type: str = Query("", description="Filter by event type"),
+    outcome: str = Query("", description="Filter by outcome"),
+    limit: int = Query(200, description="Max outcomes"),
+):
+    return {
+        "outcomes": db.get_outcomes(
+            event_type=event_type, outcome=outcome, limit=limit,
+        ),
+    }
+
+
+@app.get("/api/metrics/quality")
+async def get_quality_metrics_endpoint(
+    days: int = Query(90, description="Lookback in days"),
+):
+    return db.get_quality_metrics(days=days)
+
+
+# ---------------------------------------------------------------------------
 # Dynamic Knowledge Graph (Onda 10)
 # ---------------------------------------------------------------------------
 
