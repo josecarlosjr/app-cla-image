@@ -8,6 +8,7 @@ const items = [
   { to: "/crypto", label: "Crypto", icon: "◬" },
   { to: "/jobs", label: "Jobs", icon: "◰" },
   { to: "/supply-chain", label: "Supply Chain", icon: "⛓" },
+  { to: "/graph", label: "Knowledge Graph", icon: "◇" },
   { to: "/settings", label: "Settings", icon: "⚙" },
 ];
 

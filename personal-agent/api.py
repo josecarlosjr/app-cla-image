@@ -488,6 +488,104 @@ async def get_cross_pillar_chains(
     return {"chains": db.get_cross_pillar_chains(hours=hours, limit=limit)}
 
 
+# ---------------------------------------------------------------------------
+# Dynamic Knowledge Graph (Onda 10)
+# ---------------------------------------------------------------------------
+
+class ReviewAction(BaseModel):
+    action: str  # "approve" or "reject"
+
+
+@app.get("/api/graph/stats")
+async def get_graph_stats():
+    return db.get_graph_stats()
+
+
+@app.get("/api/graph/entities")
+async def get_graph_entities(
+    status: str = Query("", description="Filter: staged, approved, rejected"),
+    entity_type: str = Query("", description="Filter by entity type"),
+    limit: int = Query(100, description="Max results"),
+):
+    entities = db.get_graph_entities(
+        status=status, entity_type=entity_type, limit=limit,
+    )
+    return {"entities": entities, "total": len(entities)}
+
+
+@app.get("/api/graph/relationships")
+async def get_graph_relationships(
+    status: str = Query("", description="Filter: staged, approved, rejected"),
+    limit: int = Query(100, description="Max results"),
+):
+    rels = db.get_graph_relationships(status=status, limit=limit)
+    return {"relationships": rels, "total": len(rels)}
+
+
+@app.post("/api/graph/entities/{entity_id}/review")
+async def review_graph_entity(entity_id: int, body: ReviewAction):
+    if body.action not in ("approve", "reject"):
+        raise HTTPException(400, "action must be 'approve' or 'reject'")
+    ok = db.update_graph_entity_status(entity_id, body.action + "d")
+    if not ok:
+        raise HTTPException(404, f"Entity {entity_id} not found")
+    return {"id": entity_id, "status": body.action + "d"}
+
+
+@app.post("/api/graph/relationships/{rel_id}/review")
+async def review_graph_relationship(rel_id: int, body: ReviewAction):
+    if body.action not in ("approve", "reject"):
+        raise HTTPException(400, "action must be 'approve' or 'reject'")
+    ok = db.update_graph_relationship_status(rel_id, body.action + "d")
+    if not ok:
+        raise HTTPException(404, f"Relationship {rel_id} not found")
+    return {"id": rel_id, "status": body.action + "d"}
+
+
+@app.post("/api/graph/entities/batch-review")
+async def batch_review_entities(body: dict):
+    action = body.get("action", "")
+    ids = body.get("ids", [])
+    if action not in ("approve", "reject") or not ids:
+        raise HTTPException(400, "Need action (approve/reject) and ids[]")
+    status = action + "d"
+    count = 0
+    for eid in ids:
+        if db.update_graph_entity_status(int(eid), status):
+            count += 1
+    return {"updated": count, "status": status}
+
+
+@app.post("/api/graph/relationships/batch-review")
+async def batch_review_relationships(body: dict):
+    action = body.get("action", "")
+    ids = body.get("ids", [])
+    if action not in ("approve", "reject") or not ids:
+        raise HTTPException(400, "Need action (approve/reject) and ids[]")
+    status = action + "d"
+    count = 0
+    for rid in ids:
+        if db.update_graph_relationship_status(int(rid), status):
+            count += 1
+    return {"updated": count, "status": status}
+
+
+@app.post("/api/graph/extract")
+async def trigger_graph_extraction():
+    from graph_extractor import extract_graph_triples
+    result = await extract_graph_triples()
+    return result
+
+
+@app.get("/api/graph/full")
+async def get_full_graph():
+    return db.get_graph_for_display(status="approved")
+
+
+# ---------------------------------------------------------------------------
+# Cross-pillar chains (Onda 9)
+# ---------------------------------------------------------------------------
+
 @app.get("/api/cross-pillar/active")
 async def get_cross_pillar_active(
     window_hours: int = Query(168, description="Window for live event collection"),

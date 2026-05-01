@@ -143,6 +143,41 @@ export type SupplyChainImpact = {
   dependencies: string[];
 };
 
+export type GraphEntity = {
+  id: number;
+  name: string;
+  canonical: string;
+  entity_type: string;
+  pillar: string;
+  first_seen: string;
+  source_url: string;
+  mention_count: number;
+  status: string;
+  reviewed_at: string;
+};
+
+export type GraphRelationship = {
+  id: number;
+  subject_id: number;
+  predicate: string;
+  object_id: number;
+  confidence: number;
+  source_url: string;
+  first_seen: string;
+  mention_count: number;
+  status: string;
+  reviewed_at: string;
+  subject_name: string;
+  subject_canonical: string;
+  object_name: string;
+  object_canonical: string;
+};
+
+export type GraphStats = {
+  entities: Record<string, number>;
+  relationships: Record<string, number>;
+};
+
 export type CrossPillarEvent = {
   kind: "pattern" | "spike" | "correlated_chain" | "temporal";
   id: string;

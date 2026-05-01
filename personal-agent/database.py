@@ -144,6 +144,39 @@ CREATE TABLE IF NOT EXISTS cross_pillar_chains (
 );
 CREATE INDEX IF NOT EXISTS idx_cpc_detected ON cross_pillar_chains(detected_at);
 CREATE INDEX IF NOT EXISTS idx_cpc_hash ON cross_pillar_chains(members_hash);
+
+CREATE TABLE IF NOT EXISTS graph_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    canonical TEXT NOT NULL UNIQUE,
+    entity_type TEXT NOT NULL,
+    pillar TEXT DEFAULT '',
+    first_seen TEXT NOT NULL,
+    source_url TEXT DEFAULT '',
+    mention_count INTEGER DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'staged',
+    reviewed_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ge_status ON graph_entities(status);
+CREATE INDEX IF NOT EXISTS idx_ge_type ON graph_entities(entity_type);
+
+CREATE TABLE IF NOT EXISTS graph_relationships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_id INTEGER NOT NULL,
+    predicate TEXT NOT NULL,
+    object_id INTEGER NOT NULL,
+    confidence REAL DEFAULT 0.5,
+    source_url TEXT DEFAULT '',
+    first_seen TEXT NOT NULL,
+    mention_count INTEGER DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'staged',
+    reviewed_at TEXT DEFAULT '',
+    FOREIGN KEY (subject_id) REFERENCES graph_entities(id),
+    FOREIGN KEY (object_id) REFERENCES graph_entities(id)
+);
+CREATE INDEX IF NOT EXISTS idx_gr_status ON graph_relationships(status);
+CREATE INDEX IF NOT EXISTS idx_gr_subject ON graph_relationships(subject_id);
+CREATE INDEX IF NOT EXISTS idx_gr_object ON graph_relationships(object_id);
 """
 
 # ---------------------------------------------------------------------------
@@ -887,6 +920,163 @@ def prune_cross_pillar_chains(days: int = 60) -> None:
         conn.execute(
             "DELETE FROM cross_pillar_chains WHERE detected_at < ?", (cutoff,),
         )
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Knowledge Graph (Onda 10)
+# ---------------------------------------------------------------------------
+
+def upsert_graph_entity(
+    name: str,
+    canonical: str,
+    entity_type: str,
+    pillar: str = "",
+    source_url: str = "",
+) -> int:
+    conn = _db()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        existing = conn.execute(
+            "SELECT id, mention_count FROM graph_entities WHERE canonical = ?",
+            (canonical,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE graph_entities SET mention_count = mention_count + 1 WHERE id = ?",
+                (existing["id"],),
+            )
+            return existing["id"]
+        cursor = conn.execute(
+            """INSERT INTO graph_entities
+               (name, canonical, entity_type, pillar, first_seen, source_url)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (name, canonical, entity_type, pillar, now, source_url),
+        )
+        return cursor.lastrowid or 0
+
+
+def upsert_graph_relationship(
+    subject_id: int,
+    predicate: str,
+    object_id: int,
+    confidence: float = 0.5,
+    source_url: str = "",
+) -> int:
+    conn = _db()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        existing = conn.execute(
+            """SELECT id, mention_count, confidence FROM graph_relationships
+               WHERE subject_id = ? AND predicate = ? AND object_id = ?""",
+            (subject_id, predicate, object_id),
+        ).fetchone()
+        if existing:
+            new_conf = min(1.0, existing["confidence"] + 0.05)
+            conn.execute(
+                """UPDATE graph_relationships
+                   SET mention_count = mention_count + 1, confidence = ?
+                   WHERE id = ?""",
+                (new_conf, existing["id"]),
+            )
+            return existing["id"]
+        cursor = conn.execute(
+            """INSERT INTO graph_relationships
+               (subject_id, predicate, object_id, confidence, first_seen, source_url)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (subject_id, predicate, object_id, confidence, now, source_url),
+        )
+        return cursor.lastrowid or 0
+
+
+def get_graph_entities(
+    *, status: str = "", entity_type: str = "", limit: int = 100,
+) -> list[dict]:
+    conn = _db()
+    clauses: list[str] = []
+    params: list = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if entity_type:
+        clauses.append("entity_type = ?")
+        params.append(entity_type)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"""SELECT * FROM graph_entities {where}
+            ORDER BY mention_count DESC, first_seen DESC LIMIT ?""",
+        params + [limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_graph_relationships(
+    *, status: str = "", limit: int = 100,
+) -> list[dict]:
+    conn = _db()
+    clause = "WHERE r.status = ?" if status else ""
+    params: list = [status] if status else []
+    rows = conn.execute(
+        f"""SELECT r.*, s.name AS subject_name, s.canonical AS subject_canonical,
+                   o.name AS object_name, o.canonical AS object_canonical
+            FROM graph_relationships r
+            JOIN graph_entities s ON r.subject_id = s.id
+            JOIN graph_entities o ON r.object_id = o.id
+            {clause}
+            ORDER BY r.mention_count DESC, r.first_seen DESC LIMIT ?""",
+        params + [limit],
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_graph_entity_status(entity_id: int, status: str) -> bool:
+    conn = _db()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        cursor = conn.execute(
+            "UPDATE graph_entities SET status = ?, reviewed_at = ? WHERE id = ?",
+            (status, now, entity_id),
+        )
+        return cursor.rowcount > 0
+
+
+def update_graph_relationship_status(rel_id: int, status: str) -> bool:
+    conn = _db()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        cursor = conn.execute(
+            "UPDATE graph_relationships SET status = ?, reviewed_at = ? WHERE id = ?",
+            (status, now, rel_id),
+        )
+        return cursor.rowcount > 0
+
+
+def get_graph_stats() -> dict:
+    conn = _db()
+    entity_counts = {}
+    for row in conn.execute(
+        "SELECT status, COUNT(*) as cnt FROM graph_entities GROUP BY status"
+    ):
+        entity_counts[row["status"]] = row["cnt"]
+    rel_counts = {}
+    for row in conn.execute(
+        "SELECT status, COUNT(*) as cnt FROM graph_relationships GROUP BY status"
+    ):
+        rel_counts[row["status"]] = row["cnt"]
+    return {"entities": entity_counts, "relationships": rel_counts}
+
+
+def get_entity_id_by_canonical(canonical: str) -> int | None:
+    conn = _db()
+    row = conn.execute(
+        "SELECT id FROM graph_entities WHERE canonical = ?", (canonical,),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def get_graph_for_display(status: str = "approved") -> dict:
+    entities = get_graph_entities(status=status, limit=500)
+    relationships = get_graph_relationships(status=status, limit=500)
+    return {"entities": entities, "relationships": relationships}
 
 
 # ---------------------------------------------------------------------------
