@@ -216,6 +216,19 @@ CREATE INDEX IF NOT EXISTS idx_backtest_created ON backtest_runs(created_at);
 
 _conn: sqlite3.Connection | None = None
 
+# Tables introduced after the initial schema (Onda 10 and Onda 11). If a
+# persistent volume survives an image upgrade and the original schema run
+# never reached these CREATE statements, the database ends up missing them
+# and any graph/backtest code path crashes with "no such table: ...". The
+# guard in `_db` re-applies the schema whenever any of these are absent.
+_LATE_ADDED_TABLES = (
+    "graph_entities",
+    "graph_relationships",
+    "system_snapshots",
+    "event_outcomes",
+    "backtest_runs",
+)
+
 
 def _db() -> sqlite3.Connection:
     global _conn
@@ -230,7 +243,24 @@ def _db() -> sqlite3.Connection:
         _migrate_embeddings_schema(_conn)
         _ensure_vec_table(_conn)
         _migrate_from_json()
+    _ensure_late_added_tables(_conn)
     return _conn
+
+
+def _ensure_late_added_tables(conn: sqlite3.Connection) -> None:
+    existing = {
+        r["name"]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    missing = [t for t in _LATE_ADDED_TABLES if t not in existing]
+    if not missing:
+        return
+    logger.warning(
+        "DB missing late-added tables %s — reapplying schema", missing,
+    )
+    conn.executescript(_SCHEMA)
 
 
 def _try_load_sqlite_vec(conn: sqlite3.Connection) -> None:
