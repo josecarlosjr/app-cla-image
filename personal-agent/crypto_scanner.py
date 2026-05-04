@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import httpx
 from duckduckgo_search import DDGS
 
-from llm import generate_text
+from llm import generate_text, MODEL_HAIKU
 
 from log_config import setup_logging
 
@@ -163,7 +163,9 @@ async def _analyze_coin(coin: dict, search_context: str) -> str | None:
         "Seja direto e honesto. Maximo 150 palavras."
     )
 
-    text = await generate_text(prompt=prompt, max_tokens=768)
+    text = await generate_text(
+        prompt=prompt, max_tokens=768, model=MODEL_HAIKU,
+    )
     return text or None
 
 
