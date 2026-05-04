@@ -36,6 +36,18 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
+# Liveness/readiness — must NOT touch the SQLite DB. The DB lives on a
+# ReadWriteMany PVC shared by both replicas, so transient lock contention
+# during startup or schema migration could otherwise tip the pod into a
+# CrashLoop via the kubelet probes.
+# ---------------------------------------------------------------------------
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
 # Helpers: read JSON files from PVC
 # ---------------------------------------------------------------------------
 
