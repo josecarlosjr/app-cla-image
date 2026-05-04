@@ -239,8 +239,12 @@ def _db() -> sqlite3.Connection:
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA synchronous=NORMAL")
         _try_load_sqlite_vec(_conn)
-        _conn.executescript(_SCHEMA)
+        # Column-level migrations must run BEFORE executescript: the
+        # schema contains CREATE INDEX statements on columns added via
+        # ALTER TABLE, which would crash on a stale table that predates
+        # the column.
         _migrate_embeddings_schema(_conn)
+        _conn.executescript(_SCHEMA)
         _ensure_vec_table(_conn)
         _migrate_from_json()
     _ensure_late_added_tables(_conn)
@@ -260,6 +264,7 @@ def _ensure_late_added_tables(conn: sqlite3.Connection) -> None:
     logger.warning(
         "DB missing late-added tables %s — reapplying schema", missing,
     )
+    _migrate_embeddings_schema(conn)
     conn.executescript(_SCHEMA)
 
 
@@ -279,6 +284,11 @@ def _try_load_sqlite_vec(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_embeddings_schema(conn: sqlite3.Connection) -> None:
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='embeddings'"
+    ).fetchone()
+    if not table_exists:
+        return
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(embeddings)")}
     if "embedding_version" not in cols:
         with conn:
