@@ -34,7 +34,7 @@ TFIDF_SIMILARITY_THRESHOLD = 0.3
 SEMANTIC_SIMILARITY_THRESHOLD = 0.5
 SEMANTIC_BOOSTED_THRESHOLD = 0.35
 ENTITY_TOPIC_FLOOR = 0.3
-MIN_SOURCES_FOR_STRONG = 2
+MIN_SOURCES_FOR_STRONG = 3
 ENRICH_MAX_NEW_PER_RUN = 50
 
 CATEGORIES = [
@@ -401,7 +401,7 @@ async def main():
     logger.info("Found %d clusters.", len(clusters))
 
     strong = [c for c in clusters if _is_strong_pattern(c)]
-    logger.info("Strong patterns (2+ sources): %d", len(strong))
+    logger.info("Strong patterns (%d+ sources): %d", MIN_SOURCES_FOR_STRONG, len(strong))
 
     new_count = 0
 
