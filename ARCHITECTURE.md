@@ -21,6 +21,7 @@ The pipeline is built in iterative waves ("Ondas"):
 | 9    | Cross-pillar correlation engine (4 pillars · alert consolidation) | shipped |
 | 10   | Dynamic Knowledge Graph with human review (staged → approved) | shipped |
 | 11   | Backtesting · system snapshots · outcome labelling · quality metrics | shipped |
+| —    | Cost optimisation pass: Haiku in crypto, 1×/day pattern cron, ≥3-source threshold, URL canonicalisation | shipped |
 
 ## System Overview
 
@@ -48,13 +49,13 @@ flowchart TB
     end
 
     subgraph ENRICHMENT["ENRICHMENT"]
-        ENR["Entity / Topic<br/>(enrichment.py)<br/>Haiku · cached by URL"]:::llm
+        ENR["Entity / Topic<br/>(enrichment.py)<br/>Haiku · URL canonicalised<br/>cached 12k entries"]:::llm
         EMB["Embeddings<br/>(embeddings.py)<br/>Voyage 3-lite (512d)<br/>TF-IDF fallback"]:::llm
     end
 
     subgraph ANALYSIS["ANALYSIS"]
         direction LR
-        PM["Pattern Matcher<br/>(pattern_matcher.py)<br/>sqlite-vec ANN O(n·K)<br/>brute-force fallback<br/>→ Sonnet for ALTA/MEDIA/BAIXA"]:::llm
+        PM["Pattern Matcher<br/>(pattern_matcher.py)<br/>sqlite-vec ANN O(n·K)<br/>≥3 sources for Sonnet<br/>brute-force fallback"]:::llm
         TS["Trend Scorer<br/>(trend_scorer.py)<br/>9 categories<br/>weighted counts"]:::process
         TMP["Temporal<br/>(temporal.py)<br/>2x baseline = accelerate<br/>0.3x = decelerate"]:::process
         SCA["Supply-Chain Analyzer<br/>(supply_chain_analyzer.py)<br/>spike · propagation<br/>correlated chains"]:::process
@@ -102,7 +103,7 @@ flowchart TB
         C1["market-monitor<br/>0 * * * *"]:::cron
         C2["crypto-scanner<br/>30 * * * *"]:::cron
         C3["news-analyzer<br/>0 9,14,21 * * *"]:::cron
-        C4["pattern-analysis<br/>0 10,18 * * *"]:::cron
+        C4["pattern-analysis<br/>0 14 * * * (1×/day)"]:::cron
         C5["digest-morning · digest-evening<br/>0 9 · 0 21"]:::cron
         C6["notifications<br/>0 */4 * * *"]:::cron
     end
@@ -167,11 +168,11 @@ flowchart LR
     C -->|yes| D["skip"]:::step
     C -->|no| E["articles table"]:::store
     E --> F["temporal snapshot"]:::store
-    E --> G["enrichment (Haiku)"]:::step --> G2["enrichments table"]:::store
+    E --> G["enrichment (Haiku)<br/>URL canonicalised"]:::step --> G2["enrichments table"]:::store
     E --> H["embedding (Voyage)"]:::step --> H2["embeddings + vec0"]:::store
     G2 & H2 --> I["pattern matcher<br/>sqlite-vec ANN top-K<br/>or brute-force"]:::step
-    I --> J{"≥2 sources?"}:::decision
-    J -->|no| K["skip"]:::step
+    I --> J{"≥3 sources?"}:::decision
+    J -->|no| K["skip<br/>(below LLM threshold)"]:::step
     J -->|yes| L["Sonnet analysis<br/>ALTA/MEDIA/BAIXA"]:::step
     L --> M["patterns table"]:::store
     L --> N{"ALTA?"}:::decision
@@ -225,7 +226,7 @@ flowchart TB
 |-------|---------|-------------|-----------|
 | `articles` | RSS articles + relevance score | url (PK), category, fetched_at, relevance_score | 365d (configurable) |
 | `patterns` | Detected cross-source patterns | id, articles_json, confidence (ALTA/MEDIA/BAIXA) | 100 most recent |
-| `enrichments` | Haiku entity/topic extractions | url (PK), entities_json, topics_json | 12000 most recent |
+| `enrichments` | Haiku entity/topic extractions (canonical-URL keyed) | url (PK), entities_json, topics_json | 12000 most recent |
 | `embeddings` | Voyage AI vectors | url (PK), vector BLOB, embedding_version | 25000 most recent |
 | `embeddings_vec` | sqlite-vec virtual table mirror | url (PK), embedding (vec0) | synced with `embeddings` |
 | `trend_scores` | Latest category scores + connections | key, data_json | current state only |
@@ -295,30 +296,45 @@ JOBS (CRUD)
 
 ## Cost Summary
 
-```
-┌──────────────────────────────────────────────────────────┐
-│           Monthly Anthropic API Cost — ~$15              │
-├──────────────────────────┬──────────┬───────────────────┤
-│ Component                │ Model    │ Cost/month        │
-├──────────────────────────┼──────────┼───────────────────┤
-│ Pattern Matcher          │ Sonnet   │ ~$7.20            │
-│ Enrichment               │ Haiku    │ ~$3.60            │
-│ Digest (2x/day)          │ Sonnet   │ ~$2.00            │
-│ News Analyzer            │ Sonnet   │ ~$1.50            │
-│ Knowledge Graph extract  │ Haiku    │ ~$1.20            │
-│ Crypto alerts            │ Haiku ⭐ │ ~$0.20            │
-├──────────────────────────┼──────────┼───────────────────┤
-│ Temporal · Trend · etc.  │ Python   │ $0.00             │
-│ Supply-chain · Cross-p.  │ Python   │ $0.00             │
-│ Backtest replay          │ Python   │ $0.00             │
-│ Voyage AI embeddings     │ API      │ $0.00 (free tier) │
-├──────────────────────────┼──────────┼───────────────────┤
-│ TOTAL                    │          │ ~$15/month        │
-└──────────────────────────┴──────────┴───────────────────┘
+After the cost-optimisation pass the monthly LLM budget is roughly **$10**
+(down from ~$15) — leaving headroom to add new capabilities (e.g. a quant
+layer with FRED/yfinance, bubble detection) without raising the total.
 
-⭐ Crypto alerts switched from Sonnet ($0.70) to Haiku ($0.20) —
-   workload (150-word structured PT-BR analysis) is Haiku's sweet spot.
 ```
+┌─────────────────────────────────────────────────────────────────────┐
+│           Monthly Anthropic API Cost — ~$10 (was ~$15)               │
+├──────────────────────────┬──────────┬───────────┬─────────────────┤
+│ Component                │ Model    │ Cost/mo   │ Δ vs baseline   │
+├──────────────────────────┼──────────┼───────────┼─────────────────┤
+│ Pattern Matcher          │ Sonnet   │ ~$1.60    │ −$5.60  ⭐⭐⭐   │
+│ Enrichment               │ Haiku    │ ~$2.30    │ −$1.30  ⭐      │
+│ Digest (2×/day)          │ Sonnet   │ ~$2.00    │ unchanged       │
+│ News Analyzer            │ Sonnet   │ ~$1.50    │ unchanged       │
+│ Knowledge Graph extract  │ Haiku    │ ~$1.20    │ unchanged       │
+│ Crypto alerts            │ Haiku    │ ~$0.20    │ −$0.50  ⭐      │
+├──────────────────────────┼──────────┼───────────┼─────────────────┤
+│ Temporal · Trend · etc.  │ Python   │ $0.00     │ —               │
+│ Supply-chain · Cross-p.  │ Python   │ $0.00     │ —               │
+│ Backtest replay          │ Python   │ $0.00     │ —               │
+│ Voyage AI embeddings     │ API      │ $0.00     │ free tier       │
+├──────────────────────────┼──────────┼───────────┼─────────────────┤
+│ TOTAL                    │          │ ~$8–10    │ saving ~$5–7/mo │
+└──────────────────────────┴──────────┴───────────┴─────────────────┘
+```
+
+### Where the savings come from
+
+| Lever | Mechanism | Saving |
+|-------|-----------|--------|
+| Pattern cron 2× → 1×/day | `pattern-analysis` schedule changed from `0 10,18` to `0 14`. The two slots were processing nearly the same 48h window — second run added little new signal, just paid Sonnet again. | ~$3.60/mo |
+| Pattern threshold 2 → 3 sources | `MIN_SOURCES_FOR_STRONG = 3` in `pattern_matcher.py`. Single-source-pair clusters were producing mostly MEDIA/BAIXA outputs anyway; raising the bar cuts Sonnet calls without losing real signal. | ~$2.00/mo |
+| Enrichment URL canonicalisation | Strip `utm_*`, `fbclid`, `gclid`, `mc_*`, `ref=`, fragments before keying the cache. Same article syndicated via different trackers now reuses the cached enrichment instead of paying Haiku again. | ~$1.00–1.50/mo |
+| Crypto Sonnet → Haiku | Pump-coin analysis is a 150-word structured PT-BR output — exactly the workload Haiku handles fluently. | ~$0.50/mo |
+
+These are conservative estimates; the actual saving varies with volatility
+(more pumps = more crypto calls, more news = more enrichment misses)
+but the optimisation does not change behavioural quality — only volume
+and model selection.
 
 ## Infrastructure
 
@@ -344,7 +360,7 @@ JOBS (CRUD)
 │  │  ├── market-monitor      (0 * * * *)                    ││
 │  │  ├── crypto-scanner      (30 * * * *)                   ││
 │  │  ├── news-analyzer       (0 9,14,21 * * *)              ││
-│  │  ├── pattern-analysis    (0 10,18 * * *)                ││
+│  │  ├── pattern-analysis    (0 14 * * *)  ← was 0 10,18    ││
 │  │  ├── digest-morning      (0 9 * * *)                    ││
 │  │  ├── digest-evening      (0 21 * * *)                   ││
 │  │  └── notifications       (0 */4 * * *)                  ││
@@ -391,8 +407,8 @@ The system is **LLM-centric with rule-based scaffolding**:
 - **Embeddings** — Voyage 3-lite (512-dim) with TF-IDF fallback, served
   through `sqlite-vec` (vec0 virtual table) for top-K cosine search.
 - **Clustering** — greedy single-pass single-linkage at thresholds
-  `semantic=0.5` / `tfidf=0.3` / `semantic+entity=0.35`; minimum 2 distinct
-  sources for a "strong" pattern.
+  `semantic=0.5` / `tfidf=0.3` / `semantic+entity=0.35`; minimum **3**
+  distinct sources for a "strong" pattern (raised from 2 in the cost pass).
 - **Scoring** — hand-tuned heuristics: `relevance_filter` (5-component
   score 0–100), `trend_scorer` (weighted category counts), `temporal`
   (acceleration/divergence ratios with fixed thresholds).
