@@ -6,6 +6,8 @@ disambiguate articles that look semantically similar but are about different
 companies, products, or places.
 
 Cached by URL in SQLite — each article is enriched at most once.
+URLs are canonicalised before lookup so the same article surfacing with
+different tracking parameters (utm_*, fbclid, etc.) reuses the cache.
 Run-level cap (max_new) controls cost per invocation.
 """
 
@@ -18,6 +20,30 @@ from database import get_enrichments_batch, save_enrichment, prune_enrichments
 logger = logging.getLogger(__name__)
 
 MAX_CACHE_ENTRIES = 12000
+
+# Query-string keys that don't change article content. Stripping them before
+# the cache lookup means the same story syndicated through different
+# trackers (utm_*, gclid, mc_eid, etc.) maps to a single enrichment row,
+# which is the cheap-and-safe ~$1/mo saving over running the bare URL.
+_TRACKING_PREFIXES = ("utm_", "fb", "gclid", "mc_", "_ga", "yclid")
+_TRACKING_NAMES = {"ref", "source", "campaign", "medium", "ncid"}
+
+
+def _canonical_url(url: str) -> str:
+    if not url:
+        return url
+    url = url.split("#", 1)[0]
+    if "?" not in url:
+        return url
+    base, query = url.split("?", 1)
+    kept: list[str] = []
+    for kv in query.split("&"):
+        key = kv.split("=", 1)[0].lower()
+        if key.startswith(_TRACKING_PREFIXES) or key in _TRACKING_NAMES:
+            continue
+        kept.append(kv)
+    return base + ("?" + "&".join(kept) if kept else "")
+
 
 ENRICHMENT_SCHEMA = {
     "type": "object",
@@ -95,13 +121,14 @@ async def enrich_articles(
 
     Uses SQLite-backed URL-keyed cache. Articles already cached are hydrated
     for free. New articles are enriched via Haiku, capped at max_new per call.
+    URL is canonicalised so tracking-parameter variants share one cache row.
     """
-    urls = [a.get("url", "") for a in articles if a.get("url")]
-    cached = get_enrichments_batch(urls)
+    canonical_urls = [_canonical_url(a.get("url", "")) for a in articles if a.get("url")]
+    cached = get_enrichments_batch(canonical_urls)
 
     needs: list[dict] = []
     for article in articles:
-        url = article.get("url", "")
+        url = _canonical_url(article.get("url", ""))
         if url and url in cached:
             article["_entities"] = cached[url]["entities"]
             article["_topics"] = cached[url]["topics"]
@@ -125,7 +152,11 @@ async def enrich_articles(
         async with sem:
             result = await _enrich_one(article)
             if result:
-                save_enrichment(article["url"], result["entities"], result["topics"])
+                save_enrichment(
+                    _canonical_url(article["url"]),
+                    result["entities"],
+                    result["topics"],
+                )
                 article["_entities"] = result["entities"]
                 article["_topics"] = result["topics"]
 
