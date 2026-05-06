@@ -22,6 +22,7 @@ The pipeline is built in iterative waves ("Ondas"):
 | 10   | Dynamic Knowledge Graph with human review (staged → approved) | shipped |
 | 11   | Backtesting · system snapshots · outcome labelling · quality metrics | shipped |
 | —    | Cost optimisation pass: Haiku in crypto, 1×/day pattern cron, ≥3-source threshold, URL canonicalisation | shipped |
+| —    | Storage hardening: API at single replica + Recreate strategy, prep for hybrid SQLite/Postgres | shipped |
 
 ## System Overview
 
@@ -63,7 +64,7 @@ flowchart TB
         GEX["Graph Extractor<br/>(graph_extractor.py)<br/>Haiku · 8 entity types<br/>14 predicates"]:::llm
     end
 
-    subgraph DB["SQLite — agent.db (WAL · ReadWriteMany PVC)"]
+    subgraph DB["SQLite — agent.db (WAL · hostPath PVC · single-node)"]
         direction LR
         DB1[("articles<br/>2000 cap<br/>365d retention")]:::store
         DB2[("patterns · enrichments<br/>embeddings · embeddings_vec")]:::store
@@ -79,7 +80,7 @@ flowchart TB
         MEM["Memory<br/>(memory.py)<br/>history · facts (JSON)"]:::store
     end
 
-    subgraph API["FASTAPI · personal-agent-api · port 8000"]
+    subgraph API["FASTAPI · personal-agent-api · port 8000<br/>replicas: 1 · strategy: Recreate"]
         direction LR
         APIR["~40 endpoints<br/>news · patterns · trends<br/>supply-chain · cross-pillar<br/>graph · backtest · snapshots<br/>outcomes · quality · jobs<br/>/healthz"]:::output
     end
@@ -348,7 +349,8 @@ and model selection.
 │  │  ├── exec liveness/readiness probe                      ││
 │  │  └── Volume: /data/agent.db (SQLite + WAL)              ││
 │  │                                                          ││
-│  │  Deployment: personal-agent-api (2 replicas) ── FastAPI ││
+│  │  Deployment: personal-agent-api ── FastAPI              ││
+│  │  ├── replicas: 1 · strategy: Recreate                   ││
 │  │  ├── Container: api · CMD: uvicorn api:app              ││
 │  │  ├── Port: 8000 · readiness/liveness on /openapi.json   ││
 │  │  │   (planned: switch to /healthz once new image ships) ││
@@ -389,14 +391,64 @@ and model selection.
 
 ### Notes on the current deployment
 
-- The `personal-agent-api` deployment runs `replicas: 2` against a
-  `ReadWriteMany` PVC. SQLite on RWX works for our read-heavy load thanks
-  to WAL mode, but means schema migrations need to be idempotent and
-  safe under concurrent open — see `_migrate_embeddings_schema` and
-  `_ensure_late_added_tables`.
+- Both writers (bot + API) run as **single replicas on the same node**.
+  The PV is a hostPath at `/opt/personal-agent/data` with `nodeAffinity`
+  pinning to a labelled node, and both deployments use the same
+  `nodeSelector`, so all pods share one local disk. SQLite WAL on a
+  POSIX-compliant local FS is safe; the failure mode the SQLite docs
+  warn about ("NFS = data corruption") doesn't apply here.
+- API uses `strategy: Recreate` so a deploy never has two uvicorn
+  processes briefly contending for the schema-init write lock. Brief
+  downtime during deploys is acceptable (single-user system).
 - The bot deployment image (`sha-e69ca8f`) is older than the API image
   (`sha-16e20cc`). They share the same source tree so this is only a
   GitOps-lag issue, not a contract divergence.
+
+## Storage Strategy & Path Forward
+
+The system was originally designed around SQLite for simplicity. With
+the wave-by-wave growth that bet now needs revisiting because the
+upcoming bubble-detection work introduces a new write profile:
+
+| Workload | Write rate | Current store | Comfortable on SQLite? |
+|----------|-----------|---------------|------------------------|
+| Articles (RSS) | bursty, ~hourly | SQLite | yes |
+| Enrichments / embeddings (Haiku/Voyage) | bursty, capped | SQLite | yes |
+| Patterns / cross-pillar chains | low (1×/day) | SQLite | yes |
+| Knowledge graph (staged review) | very low (manual) | SQLite | yes |
+| Backtest snapshots | low (cron 6h) | SQLite | yes |
+| Outcomes (TP/FP labels) | very low (manual) | SQLite | yes |
+| **Time-series for bubble detection** | **continuous, high-frequency** | **planned** | **no** |
+
+The bubble detection feature will need:
+
+- Hourly (eventually minutely) price/volume bars per ticker
+- Funding-rate, open-interest, options IV snapshots
+- Macro indicators (FRED/yfinance pulls)
+- Real-time feature derivation (LPPL fits, GSADF tests)
+
+That's a **continuous time-series workload** that does not fit SQLite
+well. The plan is:
+
+1. **Now (this commit)**: hold API at `replicas: 1` with `Recreate` so
+   the existing setup is correct under deploys.
+2. **Onda 12 prep**: stand up Postgres + TimescaleDB in the homelab
+   cluster (which already has Postgres) and add `quant_*` hypertables
+   (`quant_bars`, `quant_indicators`, `quant_features`).
+3. **Onda 12 build**: the new ingestion modules (FRED, yfinance,
+   exchange APIs) write **only** to Postgres. Existing tables stay in
+   SQLite. The dashboard reads from both via the FastAPI layer.
+4. **Future cleanup**: once dual-store is comfortable, optionally move
+   `temporal_snapshots` and `supply_chain_mentions` (the only
+   medium-frequency tables in SQLite today) to Postgres too. After
+   that, scale the API read path (replicas > 1) since reads no longer
+   touch the SQLite write lock.
+
+Why not migrate everything to Postgres now? Because the article-cache
++ knowledge-graph tables are read-heavy and use sqlite-vec for KNN.
+That's working well, has zero ops cost, and porting it is a lot of
+yak-shaving for no immediate user-visible benefit. Hybrid is the
+right shape.
 
 ## Computational Techniques
 
@@ -413,6 +465,6 @@ The system is **LLM-centric with rule-based scaffolding**:
   score 0–100), `trend_scorer` (weighted category counts), `temporal`
   (acceleration/divergence ratios with fixed thresholds).
 - **No** ML training, no NER models, no time-series forecasting, no
-  reinforcement learning. The "knowledge graph" was added in Onda 10 —
+  reinforcement learning. The "knowledge graph" was added in Onda 10 →
   before that, the dashboard graph was just a category-connection
   visualisation, not a true graph.
