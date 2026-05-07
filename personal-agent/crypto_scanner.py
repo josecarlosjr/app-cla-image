@@ -8,6 +8,7 @@ import httpx
 from duckduckgo_search import DDGS
 
 from llm import generate_text, MODEL_HAIKU
+from telegram_format import to_telegram_html
 
 from log_config import setup_logging
 
@@ -58,14 +59,15 @@ def _already_scanned(scans: list[dict], coin_id: str) -> bool:
 
 async def _send_telegram(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    safe = to_telegram_html(message)
     async with httpx.AsyncClient() as client:
-        for i in range(0, len(message), 4096):
+        for i in range(0, len(safe), 4000):
             await client.post(
                 url,
                 json={
                     "chat_id": TELEGRAM_CHAT_ID,
-                    "text": message[i : i + 4096],
-                    "parse_mode": "Markdown",
+                    "text": safe[i : i + 4000],
+                    "parse_mode": "HTML",
                 },
                 timeout=10,
             )

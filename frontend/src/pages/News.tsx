@@ -1,6 +1,30 @@
 import { useEffect, useState, useCallback } from "react";
 import { api, Article, Pattern } from "../api";
 
+// Pattern analyses come from the LLM as a markdown-flavoured string.
+// The prompt asks for `*HEADER:*` (Telegram-legacy single-asterisk
+// convention) but Sonnet/Haiku regularly drift to standard CommonMark
+// `**HEADER:**`. Render both as bold so the user sees consistent
+// formatting regardless of which spelling the model chose.
+//
+// We HTML-escape the input first, then re-introduce only `<strong>`
+// and `<code>` tags. dangerouslySetInnerHTML is safe here because the
+// only HTML in the output is the small set we explicitly emit.
+function renderMd(text: string): string {
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return escaped
+    .replace(/\*\*([^\n*]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^\n_]+?)__/g, "<strong>$1</strong>")
+    .replace(
+      /(?<!\*)\*(?!\*)([^\n*]+?)(?<!\*)\*(?!\*)/g,
+      "<strong>$1</strong>",
+    )
+    .replace(/`([^`\n]+?)`/g, "<code>$1</code>");
+}
+
 const CATEGORIES = [
   "",
   "TECNOLOGIA_IA",
@@ -236,9 +260,10 @@ export default function News() {
                   ))}
                 </div>
               </div>
-              <pre className="text-sm whitespace-pre-wrap text-slate-200">
-                {p.analysis}
-              </pre>
+              <div
+                className="text-sm text-slate-200 whitespace-pre-line leading-relaxed [&_strong]:text-white [&_strong]:font-semibold [&_code]:bg-slate-800 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs"
+                dangerouslySetInnerHTML={{ __html: renderMd(p.analysis) }}
+              />
               {p.articles?.length > 0 && (
                 <details className="mt-3">
                   <summary className="text-xs text-slate-400 cursor-pointer">
