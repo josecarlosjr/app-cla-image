@@ -274,3 +274,48 @@ export type CrossPillarActiveResponse = {
   pillar_labels: Record<string, string>;
   window_hours: number;
 };
+
+// ---------------------------------------------------------------------------
+// Quant Dashboard (Onda 12)
+// ---------------------------------------------------------------------------
+
+export type QuantSeriesPoint = { ts: string; value: number };
+
+export type QuantWatchlistRow = {
+  ticker: string;
+  ts: string;
+  close: number;
+  change_pct_1d: number | null;
+  change_pct_30d: number | null;
+  pe: number | null;
+  market_cap: number | null;
+};
+
+export type QuantDashboard = {
+  yield_curve: {
+    T10Y3M: QuantSeriesPoint[];
+    T10Y2Y: QuantSeriesPoint[];
+    latest_t10y3m_bps: number | null;
+    inverted: boolean;
+  };
+  credit: {
+    HY: QuantSeriesPoint[];
+    BBB: QuantSeriesPoint[];
+    latest_hy_pct: number | null;
+    hy_status: "tight" | "normal" | "elevated" | "stress" | "unknown";
+  };
+  vix: {
+    series: QuantSeriesPoint[];
+    latest: number | null;
+    status: "calm" | "nervous" | "fear" | "panic" | "unknown";
+  };
+  watchlist: QuantWatchlistRow[];
+  updated_at: string;
+};
+
+export type QuantHealth = {
+  quant_indicators: number;
+  quant_bars: number;
+  quant_valuations: number;
+  quant_features: number;
+};
