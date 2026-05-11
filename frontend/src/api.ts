@@ -289,6 +289,11 @@ export type QuantWatchlistRow = {
   change_pct_30d: number | null;
   pe: number | null;
   market_cap: number | null;
+  // Phase 4 detector output (null until quant_detectors cron has run
+  // for this ticker).
+  lppl_bubble_prob: number | null;
+  gsadf_bsadf: number | null;
+  gsadf_explosive: boolean;
 };
 
 export type QuantDashboard = {
