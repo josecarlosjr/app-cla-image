@@ -10,6 +10,7 @@ const items = [
   { to: "/supply-chain", label: "Supply Chain", icon: "⛓" },
   { to: "/graph", label: "Knowledge Graph", icon: "◇" },
   { to: "/backtesting", label: "Backtesting", icon: "↻" },
+  { to: "/quant", label: "Quant", icon: "◭" },
   { to: "/settings", label: "Settings", icon: "⚙" },
 ];
 

@@ -1,4 +1,4 @@
-"""Postgres / TimescaleDB connection helper for the quant ingestion path.
+"""Postgres / TimescaleDB connection helper for the quant layer.
 
 Mirrors `database.py` (which talks to SQLite) but for the new postgres
 instance that holds time-series data — articles/patterns/graph stay in
@@ -11,21 +11,29 @@ Connection string resolution order:
   1. `DATABASE_URL` env var (preferred — it's what the postgres-secrets
      Secret exposes as a single line, no parsing needed).
   2. Composed from individual parts (`PIA_DB_USER`, `PIA_DB_PASSWORD`,
-     `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`). Useful when
-     overriding a single component for testing.
-  3. Fail with a clear error — never silently fall back to a default
-     that could connect somewhere unintended.
+     `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`).
+  3. Raise on connect — never silently fall back to a default that
+     could connect somewhere unintended.
+
+The DSN is resolved lazily (first connect, not at import) so the
+FastAPI app can import this module even when postgres isn't reachable
+or configured yet. Failures surface only at the actual DB call.
 """
 
+import json
 import logging
 import os
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 import psycopg
 from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
+
+
+_DSN: str | None = None
 
 
 def _build_dsn() -> str:
@@ -47,7 +55,11 @@ def _build_dsn() -> str:
     return f"postgresql://{user}:{pwd}@{host}:{port}/{db}"
 
 
-DSN = _build_dsn()
+def _get_dsn() -> str:
+    global _DSN
+    if _DSN is None:
+        _DSN = _build_dsn()
+    return _DSN
 
 
 @contextmanager
@@ -60,16 +72,16 @@ def connect() -> Iterator[psycopg.Connection]:
             cur.execute("...")
             conn.commit()
     """
-    conn = psycopg.connect(DSN, row_factory=dict_row)
+    conn = psycopg.connect(_get_dsn(), row_factory=dict_row)
     try:
         yield conn
     finally:
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# quant_indicators (FRED scalar series)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# WRITERS — used by the ingestion cronjobs
+# ===========================================================================
 
 def upsert_indicators(rows: list[tuple[str, str, float]]) -> int:
     """Bulk upsert of (series_id, ts ISO, value) into quant_indicators."""
@@ -86,10 +98,6 @@ def upsert_indicators(rows: list[tuple[str, str, float]]) -> int:
         conn.commit()
         return len(rows)
 
-
-# ---------------------------------------------------------------------------
-# quant_bars (OHLCV per ticker)
-# ---------------------------------------------------------------------------
 
 def upsert_bars(rows: list[tuple]) -> int:
     """Bulk upsert (ticker, ts, open, high, low, close, volume)."""
@@ -126,10 +134,6 @@ def last_bar_ts(ticker: str) -> str | None:
         return row["ts"].isoformat() if row and row["ts"] else None
 
 
-# ---------------------------------------------------------------------------
-# quant_valuations (per-ticker P/E, P/B, P/S, market cap snapshots)
-# ---------------------------------------------------------------------------
-
 def upsert_valuations(rows: list[tuple]) -> int:
     if not rows:
         return 0
@@ -150,10 +154,6 @@ def upsert_valuations(rows: list[tuple]) -> int:
         return len(rows)
 
 
-# ---------------------------------------------------------------------------
-# quant_features (detector output: LPPL, GSADF, recession score, ...)
-# ---------------------------------------------------------------------------
-
 def upsert_feature(
     feature_id: str,
     target: str,
@@ -162,7 +162,6 @@ def upsert_feature(
     meta: dict | None = None,
 ) -> None:
     """Upsert a single derived feature value."""
-    import json
     meta_json = json.dumps(meta) if meta else None
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
@@ -176,9 +175,168 @@ def upsert_feature(
         conn.commit()
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# READERS — used by the FastAPI /api/quant/* endpoints
+# ===========================================================================
+
+def get_indicator_series(series_id: str, days: int = 365) -> list[dict]:
+    """Return [{ts ISO, value}, ...] for a FRED series, most-recent-last."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT ts, value FROM quant_indicators
+               WHERE series_id = %s AND ts >= %s
+               ORDER BY ts""",
+            (series_id, cutoff),
+        )
+        return [
+            {"ts": r["ts"].isoformat(), "value": float(r["value"])}
+            for r in cur.fetchall()
+        ]
+
+
+def _hy_status(value: float | None) -> str:
+    """Map HY OAS % to a qualitative status label."""
+    if value is None:
+        return "unknown"
+    if value < 3.0:
+        return "tight"      # frothy — credit very cheap
+    if value < 5.0:
+        return "normal"
+    if value < 7.0:
+        return "elevated"
+    return "stress"         # flight-to-quality in progress
+
+
+def _vix_status(value: float | None) -> str:
+    if value is None:
+        return "unknown"
+    if value < 15:
+        return "calm"
+    if value < 25:
+        return "nervous"
+    if value < 40:
+        return "fear"
+    return "panic"
+
+
+def get_watchlist() -> list[dict]:
+    """Latest close + 1d / 30d change + latest valuation per ticker.
+
+    Uses a four-CTE query so the whole result comes back in one round
+    trip. Each CTE uses DISTINCT ON to fetch the closest matching row
+    per ticker — sub-millisecond on the (ticker, ts DESC) hypertable
+    index.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            WITH latest_bar AS (
+                SELECT DISTINCT ON (ticker)
+                    ticker, ts, close
+                FROM quant_bars
+                ORDER BY ticker, ts DESC
+            ),
+            prev_bar AS (
+                SELECT DISTINCT ON (b.ticker)
+                    b.ticker, b.close AS prev_close
+                FROM quant_bars b
+                JOIN latest_bar l ON b.ticker = l.ticker
+                WHERE b.ts < l.ts
+                ORDER BY b.ticker, b.ts DESC
+            ),
+            bar_30d_ago AS (
+                SELECT DISTINCT ON (b.ticker)
+                    b.ticker, b.close AS close_30d
+                FROM quant_bars b
+                JOIN latest_bar l ON b.ticker = l.ticker
+                WHERE b.ts <= l.ts - INTERVAL '30 days'
+                ORDER BY b.ticker, b.ts DESC
+            ),
+            latest_val AS (
+                SELECT DISTINCT ON (ticker)
+                    ticker, pe, market_cap
+                FROM quant_valuations
+                ORDER BY ticker, ts DESC
+            )
+            SELECT
+                l.ticker, l.ts, l.close,
+                p.prev_close,
+                d30.close_30d,
+                v.pe, v.market_cap
+            FROM latest_bar l
+            LEFT JOIN prev_bar p ON l.ticker = p.ticker
+            LEFT JOIN bar_30d_ago d30 ON l.ticker = d30.ticker
+            LEFT JOIN latest_val v ON l.ticker = v.ticker
+            ORDER BY l.ticker
+        """)
+        rows = cur.fetchall()
+
+    out = []
+    for r in rows:
+        close = float(r["close"])
+        prev = float(r["prev_close"]) if r["prev_close"] is not None else None
+        c30 = float(r["close_30d"]) if r["close_30d"] is not None else None
+        out.append({
+            "ticker": r["ticker"],
+            "ts": r["ts"].isoformat(),
+            "close": close,
+            "change_pct_1d": ((close - prev) / prev * 100) if prev else None,
+            "change_pct_30d": ((close - c30) / c30 * 100) if c30 else None,
+            "pe": float(r["pe"]) if r["pe"] is not None else None,
+            "market_cap": float(r["market_cap"]) if r["market_cap"] is not None else None,
+        })
+    return out
+
+
+def get_quant_dashboard() -> dict:
+    """Bundled snapshot used by the /api/quant/dashboard endpoint.
+
+    One round-trip from the frontend; multiple SQL queries here (each
+    is sub-millisecond on the hypertables).
+    """
+    out: dict = {}
+
+    # ---- Yield curve panel ----
+    t10y3m = get_indicator_series("T10Y3M", 365)
+    t10y2y = get_indicator_series("T10Y2Y", 365)
+    latest_t10y3m = t10y3m[-1]["value"] if t10y3m else None
+    out["yield_curve"] = {
+        "T10Y3M": t10y3m,
+        "T10Y2Y": t10y2y,
+        # FRED publishes spreads in percentage points; convert to bps.
+        "latest_t10y3m_bps": (latest_t10y3m * 100) if latest_t10y3m is not None else None,
+        "inverted": latest_t10y3m is not None and latest_t10y3m < 0,
+    }
+
+    # ---- Credit spreads panel ----
+    hy = get_indicator_series("BAMLH0A0HYM2", 365)
+    bbb = get_indicator_series("BAMLC0A4CBBB", 365)
+    latest_hy = hy[-1]["value"] if hy else None
+    out["credit"] = {
+        "HY": hy,
+        "BBB": bbb,
+        "latest_hy_pct": latest_hy,
+        "hy_status": _hy_status(latest_hy),
+    }
+
+    # ---- VIX panel ----
+    vix = get_indicator_series("VIXCLS", 365)
+    latest_vix = vix[-1]["value"] if vix else None
+    out["vix"] = {
+        "series": vix,
+        "latest": latest_vix,
+        "status": _vix_status(latest_vix),
+    }
+
+    # ---- Watchlist ----
+    out["watchlist"] = get_watchlist()
+    out["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return out
+
+
+# ===========================================================================
 # Health
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 def healthcheck() -> dict:
     """Quick liveness probe: connect, count rows in each hypertable."""
