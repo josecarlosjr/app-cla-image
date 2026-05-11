@@ -722,6 +722,41 @@ async def get_cross_pillar_active(
 
 
 # ---------------------------------------------------------------------------
+# Quant Dashboard (Onda 12) — FRED + yfinance time series
+# ---------------------------------------------------------------------------
+# pg_database is imported lazily inside the endpoint so the API can
+# still start in images that haven't yet been rebuilt with the psycopg
+# dep. The /api/quant/* endpoints return 503 in that case; everything
+# else keeps working.
+
+@app.get("/api/quant/dashboard")
+async def get_quant_dashboard():
+    """Bundled snapshot for the Quant page (yield curve / credit / VIX / watchlist)."""
+    try:
+        from pg_database import get_quant_dashboard as _impl
+        return _impl()
+    except ImportError as e:
+        logger.warning("Quant dashboard: psycopg not installed yet (%s)", e)
+        raise HTTPException(503, "Postgres driver not installed in this image")
+    except Exception as e:
+        logger.error("Quant dashboard query failed: %s", e)
+        raise HTTPException(500, f"Quant dashboard failed: {e}")
+
+
+@app.get("/api/quant/health")
+async def get_quant_health():
+    """Counts per hypertable. Quick way to verify ingestion is running."""
+    try:
+        from pg_database import healthcheck
+        return healthcheck()
+    except ImportError:
+        raise HTTPException(503, "Postgres driver not installed in this image")
+    except Exception as e:
+        logger.error("Quant health check failed: %s", e)
+        raise HTTPException(500, f"Quant health check failed: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point for standalone testing
 # ---------------------------------------------------------------------------
 
