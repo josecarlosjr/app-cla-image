@@ -4,7 +4,7 @@ Mirrors `database.py` (which talks to SQLite) but for the new postgres
 instance that holds time-series data — articles/patterns/graph stay in
 SQLite, quant_* lives in postgres. The hybrid is deliberate: SQLite is
 read-heavy and stays where it is; postgres absorbs the high-frequency
-writes that bubble detection will need.
+writes that bubble detection needs.
 
 Connection string resolution order:
 
@@ -195,6 +195,40 @@ def get_indicator_series(series_id: str, days: int = 365) -> list[dict]:
         ]
 
 
+def get_latest_features_by_target() -> dict[str, dict]:
+    """Latest LPPL + GSADF feature value per ticker.
+
+    Returns:
+        {
+          "SPY":  {"lppl_bubble_prob": 0.34,
+                   "gsadf_bsadf": 1.21, "gsadf_explosive": False},
+          ...
+        }
+
+    Tickers with no features yet (detector hasn't run) are absent
+    from the dict — callers should treat missing values as None.
+    """
+    out: dict[str, dict] = {}
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (feature_id, target)
+                feature_id, target, value, meta
+            FROM quant_features
+            WHERE feature_id IN ('lppl_bubble_prob', 'gsadf_stat')
+            ORDER BY feature_id, target, ts DESC
+        """)
+        for r in cur.fetchall():
+            ticker = r["target"]
+            bucket = out.setdefault(ticker, {})
+            if r["feature_id"] == "lppl_bubble_prob":
+                bucket["lppl_bubble_prob"] = float(r["value"])
+            elif r["feature_id"] == "gsadf_stat":
+                bucket["gsadf_bsadf"] = float(r["value"])
+                meta = r["meta"] or {}
+                bucket["gsadf_explosive"] = bool(meta.get("explosive", False))
+    return out
+
+
 def _hy_status(value: float | None) -> str:
     """Map HY OAS % to a qualitative status label."""
     if value is None:
@@ -271,11 +305,16 @@ def get_watchlist() -> list[dict]:
         """)
         rows = cur.fetchall()
 
+    # Enrich with the latest detector output. One extra round trip but
+    # the query is sub-millisecond (small table, indexed).
+    features = get_latest_features_by_target()
+
     out = []
     for r in rows:
         close = float(r["close"])
         prev = float(r["prev_close"]) if r["prev_close"] is not None else None
         c30 = float(r["close_30d"]) if r["close_30d"] is not None else None
+        f = features.get(r["ticker"], {})
         out.append({
             "ticker": r["ticker"],
             "ts": r["ts"].isoformat(),
@@ -284,6 +323,9 @@ def get_watchlist() -> list[dict]:
             "change_pct_30d": ((close - c30) / c30 * 100) if c30 else None,
             "pe": float(r["pe"]) if r["pe"] is not None else None,
             "market_cap": float(r["market_cap"]) if r["market_cap"] is not None else None,
+            "lppl_bubble_prob": f.get("lppl_bubble_prob"),
+            "gsadf_bsadf": f.get("gsadf_bsadf"),
+            "gsadf_explosive": f.get("gsadf_explosive", False),
         })
     return out
 
@@ -328,7 +370,7 @@ def get_quant_dashboard() -> dict:
         "status": _vix_status(latest_vix),
     }
 
-    # ---- Watchlist ----
+    # ---- Watchlist (now includes LPPL + GSADF detector output) ----
     out["watchlist"] = get_watchlist()
     out["updated_at"] = datetime.now(timezone.utc).isoformat()
     return out
