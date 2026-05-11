@@ -40,16 +40,14 @@ function formatBps(v: number | null | undefined): string {
   return `${v > 0 ? "+" : ""}${v.toFixed(0)} bps`;
 }
 
-// Merge multiple time series into a single array keyed by ts. Each
-// row gets the series name as a column so recharts can plot multiple
-// Lines from the same dataset.
+// Merge multiple time series into a single array keyed by ts.
 function mergeSeries(
   series: { name: string; data: QuantSeriesPoint[] }[],
 ): Array<Record<string, number | string>> {
   const map = new Map<string, Record<string, number | string>>();
   for (const { name, data } of series) {
     for (const p of data) {
-      const key = p.ts.substring(0, 10); // YYYY-MM-DD bucket
+      const key = p.ts.substring(0, 10);
       if (!map.has(key)) map.set(key, { ts: key });
       map.get(key)![name] = p.value;
     }
@@ -60,7 +58,28 @@ function mergeSeries(
 }
 
 // ---------------------------------------------------------------------------
-// Status styling (matches the qualitative labels server returns)
+// Detector colour bands
+// ---------------------------------------------------------------------------
+
+// LPPL bubble probability ∈ [0, 1]
+function lpplCellClass(v: number | null): string {
+  if (v === null) return "text-slate-500";
+  if (v >= 0.85) return "text-red-400 font-semibold";
+  if (v >= 0.7) return "text-amber-400";
+  if (v >= 0.5) return "text-amber-500/80";
+  return "text-slate-400";
+}
+
+// GSADF BSADF statistic. PSY 95% critical ≈ 1.49, 99% ≈ 2.07.
+function gsadfCellClass(v: number | null, explosive: boolean): string {
+  if (v === null) return "text-slate-500";
+  if (explosive && v >= 2.07) return "text-red-400 font-semibold";
+  if (explosive) return "text-amber-400";
+  return "text-slate-400";
+}
+
+// ---------------------------------------------------------------------------
+// Status styling for the summary cards
 // ---------------------------------------------------------------------------
 
 const STATUS_PILL: Record<string, string> = {
@@ -90,7 +109,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// Chart components
+// Charts
 // ---------------------------------------------------------------------------
 
 const TOOLTIP_STYLE = {
@@ -110,17 +129,8 @@ function YieldCurveChart({ yc }: { yc: QuantDashboard["yield_curve"] }) {
     <ResponsiveContainer width="100%" height={260}>
       <LineChart data={data} margin={{ top: 10, right: 20, bottom: 0, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-        <XAxis
-          dataKey="ts"
-          tickFormatter={formatDate}
-          stroke="#94a3b8"
-          fontSize={11}
-        />
-        <YAxis
-          stroke="#94a3b8"
-          fontSize={11}
-          tickFormatter={(v) => `${Number(v).toFixed(1)}%`}
-        />
+        <XAxis dataKey="ts" tickFormatter={formatDate} stroke="#94a3b8" fontSize={11} />
+        <YAxis stroke="#94a3b8" fontSize={11} tickFormatter={(v) => `${Number(v).toFixed(1)}%`} />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}
           labelFormatter={formatDate}
@@ -150,17 +160,8 @@ function CreditChart({ credit }: { credit: QuantDashboard["credit"] }) {
     <ResponsiveContainer width="100%" height={260}>
       <LineChart data={data} margin={{ top: 10, right: 20, bottom: 0, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-        <XAxis
-          dataKey="ts"
-          tickFormatter={formatDate}
-          stroke="#94a3b8"
-          fontSize={11}
-        />
-        <YAxis
-          stroke="#94a3b8"
-          fontSize={11}
-          tickFormatter={(v) => `${Number(v).toFixed(1)}%`}
-        />
+        <XAxis dataKey="ts" tickFormatter={formatDate} stroke="#94a3b8" fontSize={11} />
+        <YAxis stroke="#94a3b8" fontSize={11} tickFormatter={(v) => `${Number(v).toFixed(1)}%`} />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}
           labelFormatter={formatDate}
@@ -186,12 +187,7 @@ function VixChart({ vix }: { vix: QuantDashboard["vix"] }) {
     <ResponsiveContainer width="100%" height={260}>
       <LineChart data={data} margin={{ top: 10, right: 70, bottom: 0, left: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-        <XAxis
-          dataKey="ts"
-          tickFormatter={formatDate}
-          stroke="#94a3b8"
-          fontSize={11}
-        />
+        <XAxis dataKey="ts" tickFormatter={formatDate} stroke="#94a3b8" fontSize={11} />
         <YAxis stroke="#94a3b8" fontSize={11} />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}
@@ -262,7 +258,7 @@ export default function Quant() {
         <div>
           <h1 className="text-3xl font-bold">Quant Dashboard</h1>
           <p className="text-slate-400 mt-1">
-            Indicadores macro e cross-asset — yield curve, credit spreads, volatilidade.
+            Indicadores macro, cross-asset e detectores de bolha (LPPL + GSADF).
           </p>
         </div>
         <button
@@ -286,7 +282,6 @@ export default function Quant() {
 
       {data && (
         <>
-          {/* Summary row */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <SummaryCard
               title="Yield curve (10Y - 3M)"
@@ -331,8 +326,8 @@ export default function Quant() {
           </Panel>
 
           <Panel
-            title="Watchlist"
-            subtitle="Último close + variação 1d/30d + P/E + market cap (yfinance daily)"
+            title="Watchlist + bubble detectors"
+            subtitle="Close + variação + valuação + LPPL bubble prob (Sornette) + GSADF explosivity test (Phillips-Shi-Yu). Detectores correm 1×/dia às 23:00 UTC."
           >
             <table className="w-full text-sm">
               <thead>
@@ -342,18 +337,16 @@ export default function Quant() {
                   <th className="py-2 text-right">1d</th>
                   <th className="py-2 text-right">30d</th>
                   <th className="py-2 text-right">P/E</th>
-                  <th className="py-2 text-right">Market Cap</th>
+                  <th className="py-2 text-right">Mkt Cap</th>
+                  <th className="py-2 text-right" title="LPPL bubble probability (0..1) — R² of best log-periodic fit, discounted if params outside Sornette ranges">LPPL</th>
+                  <th className="py-2 text-right" title="GSADF BSADF statistic. PSY 95% critical ≈ 1.49, 99% ≈ 2.07. Values above 1.49 = mildly explosive.">GSADF</th>
                 </tr>
               </thead>
               <tbody>
                 {data.watchlist.length === 0 && (
                   <tr>
-                    <td
-                      colSpan={6}
-                      className="py-6 text-center text-slate-500"
-                    >
-                      Watchlist vazia — aguarde o primeiro run do cron
-                      quant-yfinance (22:00 UTC).
+                    <td colSpan={8} className="py-6 text-center text-slate-500">
+                      Watchlist vazia — aguarde o primeiro run do cron quant-yfinance (22:00 UTC).
                     </td>
                   </tr>
                 )}
@@ -393,6 +386,15 @@ export default function Quant() {
                     </td>
                     <td className="py-2 text-right text-slate-300">
                       {formatCap(w.market_cap)}
+                    </td>
+                    <td className={`py-2 text-right font-mono ${lpplCellClass(w.lppl_bubble_prob)}`}>
+                      {w.lppl_bubble_prob !== null ? w.lppl_bubble_prob.toFixed(2) : "—"}
+                    </td>
+                    <td className={`py-2 text-right font-mono ${gsadfCellClass(w.gsadf_bsadf, w.gsadf_explosive)}`}>
+                      {w.gsadf_bsadf !== null ? w.gsadf_bsadf.toFixed(2) : "—"}
+                      {w.gsadf_explosive && (
+                        <span className="ml-1" title="Above 95% critical">⚠</span>
+                      )}
                     </td>
                   </tr>
                 ))}
