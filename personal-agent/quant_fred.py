@@ -12,8 +12,8 @@ ones a bubble/recession detector actually uses:
   Real          UNRATE, CPIAUCSL,    — unemployment, inflation, IP
                 INDPRO
   Volatility    VIXCLS               — VIX close
-  Equity        WILL5000IND          — Wilshire 5000 (Buffett indicator
-                                       numerator vs. GDP)
+  Equity        WILL5000INDFC        — Wilshire 5000 Full Cap Index
+                                       (Buffett indicator numerator)
   GDP           GDP, PCE, DGORDER    — quarterly real economy data
 
 Runs as a CronJob every 6h. FRED data updates slowly (most series are
@@ -56,7 +56,7 @@ SERIES = [
     "CPIAUCSL",      # CPI all urban consumers
     "INDPRO",        # Industrial production index
     "VIXCLS",        # VIX close
-    "WILL5000IND",   # Wilshire 5000 total market index
+    "WILL5000INDFC", # Wilshire 5000 Total Market Full Cap Index
     "GDP",           # Nominal GDP (quarterly)
     "PCE",           # Personal Consumption Expenditures
     "DGORDER",       # Durable goods orders
