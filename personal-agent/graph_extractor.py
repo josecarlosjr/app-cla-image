@@ -4,6 +4,12 @@ Reads enriched articles and extracts (subject, predicate, object) triples
 to build a dynamic knowledge graph. New entities and relationships start
 as 'staged' and require human review before entering the active graph.
 
+Entity ontology covers geopolitical/tech entities (original 8 types) plus
+financial entities — asset_class, financial_instrument, central_bank,
+regulator — added to support bubble-detector context enrichment. The
+predicate set is extended with two financial-specific edges (inflates,
+triggers_default) on top of the original 14 supply-chain predicates.
+
 Cost: ~$1.20/month at 20 articles/run, 2 runs/day.
 """
 
@@ -24,6 +30,64 @@ from pillars import CATEGORY_TO_PILLAR
 
 logger = logging.getLogger(__name__)
 
+
+# Entity types — exported so downstream modules (alerts, map filters)
+# can introspect the ontology without grepping the schema.
+#
+#   company       — for-profit firm (TSMC, NVIDIA, Apple).
+#   country       — sovereign state (China, USA, Taiwan).
+#   person        — individual (Sam Altman, Jerome Powell).
+#   technology    — tech or technical concept (lithography, transformer).
+#   mineral       — raw material (lithium, rare_earth, copper).
+#   product       — finished good (iPhone, H100 GPU).
+#   organization  — non-corporate entity (WHO, OPEC, NATO).
+#   event         — discrete happening (chip ban announcement, earnings).
+#
+#   asset_class           — investment category (equities, bonds,
+#                           commodities, real_estate, cash, crypto,
+#                           derivatives).
+#   financial_instrument  — specific tradeable security or index
+#                           (spy_etf, bitcoin, us_10y_treasury,
+#                           wti_crude_futures).
+#   central_bank          — monetary authority (federal_reserve, ecb,
+#                           bank_of_japan, pboc, bank_of_england).
+#                           NOT commercial banks.
+#   regulator             — financial-markets oversight body (sec,
+#                           cftc, esma, fca, bcbs). NOT general
+#                           government.
+ENTITY_TYPES = [
+    "company", "country", "person", "technology",
+    "mineral", "product", "organization", "event",
+    "asset_class", "financial_instrument", "central_bank", "regulator",
+]
+
+
+# Predicates — also exported for downstream introspection.
+#
+# Geopolitical/supply-chain set (original 14):
+#   produces / supplies / depends_on / competes_with / regulates /
+#   invests_in / acquires / partners_with / restricts / exports /
+#   imports / develops / disrupts / sanctions
+#
+# Financial set (new):
+#   inflates         — subject causes upward pressure on price/value
+#                      of object. Use only when explicitly stated.
+#                      Examples: (federal_reserve, inflates, equities),
+#                      (m2_money_supply, inflates, real_estate).
+#   triggers_default — subject's action/condition causes object to
+#                      enter default or financial distress. Use only
+#                      when default/distress is explicit in the text.
+#                      Examples: (rate_hike, triggers_default, junk_bonds),
+#                      (sanctions, triggers_default, sovereign_debt).
+PREDICATES = [
+    "produces", "supplies", "depends_on", "competes_with",
+    "regulates", "invests_in", "acquires", "partners_with",
+    "restricts", "exports", "imports", "develops",
+    "disrupts", "sanctions",
+    "inflates", "triggers_default",
+]
+
+
 EXTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -34,21 +98,31 @@ EXTRACTION_SCHEMA = {
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Entity name as mentioned (e.g. 'TSMC', 'China').",
+                        "description": (
+                            "Entity name as mentioned (e.g. 'TSMC', 'China', "
+                            "'Federal Reserve')."
+                        ),
                     },
                     "canonical": {
                         "type": "string",
                         "description": (
-                            "Lowercase canonical form for dedup (e.g. 'tsmc', 'china'). "
-                            "Use underscore for multi-word: 'rare_earth', 'sam_altman'."
+                            "Lowercase canonical form for dedup (e.g. 'tsmc', "
+                            "'china', 'federal_reserve'). Use underscore for "
+                            "multi-word: 'rare_earth', 'sam_altman'."
                         ),
                     },
                     "type": {
                         "type": "string",
-                        "enum": [
-                            "company", "country", "person", "technology",
-                            "mineral", "product", "organization", "event",
-                        ],
+                        "enum": ENTITY_TYPES,
+                        "description": (
+                            "Geopolitical/tech: company, country, person, "
+                            "technology, mineral, product, organization, event. "
+                            "Financial: asset_class (e.g. equities, bonds, "
+                            "commodities), financial_instrument (specific "
+                            "ticker/index), central_bank (Fed/ECB/BoJ — NOT "
+                            "commercial banks), regulator (SEC/CFTC/ESMA — "
+                            "NOT general govt)."
+                        ),
                     },
                 },
                 "required": ["name", "canonical", "type"],
@@ -66,12 +140,17 @@ EXTRACTION_SCHEMA = {
                     },
                     "predicate": {
                         "type": "string",
-                        "enum": [
-                            "produces", "supplies", "depends_on", "competes_with",
-                            "regulates", "invests_in", "acquires", "partners_with",
-                            "restricts", "exports", "imports", "develops",
-                            "disrupts", "sanctions",
-                        ],
+                        "enum": PREDICATES,
+                        "description": (
+                            "Geopolitical/supply-chain set: produces, supplies, "
+                            "depends_on, competes_with, regulates, invests_in, "
+                            "acquires, partners_with, restricts, exports, "
+                            "imports, develops, disrupts, sanctions. "
+                            "Financial set: inflates (X causes upward pressure "
+                            "on Y's price/value); triggers_default (X causes Y "
+                            "to enter default/distress). Use financial "
+                            "predicates ONLY when explicitly stated in the text."
+                        ),
                     },
                     "object": {
                         "type": "string",
@@ -96,10 +175,14 @@ EXTRACTION_SCHEMA = {
 
 EXTRACTION_SYSTEM = (
     "You extract structured knowledge graph triples from news articles. "
-    "Focus on geopolitical, technological, and supply chain relationships. "
+    "Focus on (a) geopolitical, technological, and supply-chain "
+    "relationships, and (b) financial-market relationships when the "
+    "article discusses central banks, regulators, asset classes, or "
+    "specific instruments. "
     "Only extract entities and relationships CLEARLY STATED in the text. "
     "Use canonical lowercase forms for entity names (underscore for spaces). "
-    "Be precise and conservative — fewer high-quality triples beat many noisy ones."
+    "Be precise and conservative — fewer high-quality triples beat many "
+    "noisy ones."
 )
 
 _PROCESSED_URLS_KEY = "_graph_extracted_urls"
