@@ -78,8 +78,15 @@ class JobCreate(BaseModel):
 
 
 class JobUpdate(BaseModel):
-    status: str
-    notes: str = ""
+    # All fields optional so the same endpoint serves both the quick
+    # status-only update from the inline dropdown AND the full edit form.
+    # We use exclude_none in the handler so missing fields don't overwrite
+    # existing values with empty strings.
+    company: str | None = None
+    role: str | None = None
+    url: str | None = None
+    status: str | None = None
+    notes: str | None = None
 
 
 class ChatMessage(BaseModel):
@@ -372,9 +379,12 @@ async def create_job(job: JobCreate):
     jobs = _read_json("jobs_tracker.json")
     if not isinstance(jobs, list):
         jobs = []
-    job_id = len(jobs) + 1
+    # ID generation: max existing + 1, NOT len() + 1 — the latter collides
+    # after any deletion (e.g. delete #3 of [1,2,3,4,5] then create →
+    # len = 4, but #4 already exists).
+    next_id = (max((j.get("id", 0) for j in jobs), default=0) + 1)
     new_job = {
-        "id": job_id,
+        "id": next_id,
         "company": job.company,
         "role": job.role,
         "url": job.url,
@@ -395,13 +405,27 @@ async def update_job(job_id: int, update: JobUpdate):
         raise HTTPException(404, "No jobs found")
     for j in jobs:
         if j["id"] == job_id:
-            j["status"] = update.status
-            if update.notes:
-                j["notes"] = update.notes
+            # PATCH semantics: only fields explicitly sent are touched.
+            # The frontend uses this both for status-only updates from the
+            # inline dropdown and for full edits from the edit form.
+            for key, value in update.model_dump(exclude_none=True).items():
+                j[key] = value
             j["updated"] = datetime.now().isoformat()
             _write_json("jobs_tracker.json", jobs)
             return j
     raise HTTPException(404, f"Job {job_id} not found")
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: int):
+    jobs = _read_json("jobs_tracker.json")
+    if not isinstance(jobs, list):
+        raise HTTPException(404, "No jobs found")
+    remaining = [j for j in jobs if j.get("id") != job_id]
+    if len(remaining) == len(jobs):
+        raise HTTPException(404, f"Job {job_id} not found")
+    _write_json("jobs_tracker.json", remaining)
+    return {"deleted": job_id}
 
 
 # ---------------------------------------------------------------------------
