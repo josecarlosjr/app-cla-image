@@ -7,6 +7,7 @@ import {
   SupplyChainAnalysis,
   SupplyChainImpact,
 } from "../api";
+import { renderMd } from "../utils/markdown";
 
 const TYPE_COLORS: Record<string, string> = {
   mineral: "#f59e0b",
@@ -295,9 +296,13 @@ export default function SupplyChain() {
       {showAlerts && analysis && analysis.alerts.length > 0 && (
         <div className="bg-slate-900 rounded-lg border border-red-900/50 p-4 space-y-3 max-h-60 overflow-y-auto">
           {analysis.alerts.map((alert, i) => (
-            <div key={i} className="text-sm text-slate-300 border-b border-slate-800 pb-2 last:border-0">
-              {alert.text}
-            </div>
+            <div
+              key={i}
+              className="text-sm text-slate-300 border-b border-slate-800 pb-2 last:border-0"
+              dangerouslySetInnerHTML={{
+                __html: renderMd(alert.text || ""),
+              }}
+            />
           ))}
         </div>
       )}

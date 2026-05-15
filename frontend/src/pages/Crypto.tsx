@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, CryptoMover, CryptoScan } from "../api";
+import { renderMd } from "../utils/markdown";
 
 function fmt(n: number, digits = 2): string {
   return n.toLocaleString(undefined, {
@@ -191,9 +192,19 @@ export default function Crypto() {
                   </p>
                 </div>
               </div>
-              <pre className="text-sm text-slate-300 whitespace-pre-wrap">
-                {s.analysis}
-              </pre>
+              {/*
+                Was a raw <pre>{s.analysis}</pre>, which printed
+                **bold**, *bold* and `## heading` as literal asterisks /
+                hashes. renderMd rewrites those to <b>/<i>/<b>; we keep
+                the pre-wrap whitespace handling so paragraph spacing
+                from the LLM output is preserved.
+              */}
+              <div
+                className="text-sm text-slate-300 whitespace-pre-wrap"
+                dangerouslySetInnerHTML={{
+                  __html: renderMd(s.analysis || ""),
+                }}
+              />
             </div>
           ))}
           {scans.length === 0 && (

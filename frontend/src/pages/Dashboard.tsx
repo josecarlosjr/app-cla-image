@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, Prices, MemoryStats, CrossPillarActiveResponse, CrossPillarChain } from "../api";
 import StatCard from "../components/StatCard";
+import { renderMd } from "../utils/markdown";
 
 type Trends = Record<string, { score: number; trend: string; articles: number }>;
 
@@ -18,28 +19,6 @@ const PILLAR_COLORS: Record<string, string> = {
   geopolitica: "#f59e0b",
   cadeia: "#8b5cf6",
 };
-
-
-// Lightweight markdown → HTML so event labels with `**PADRAO:**`, `*X*`
-// or leading `## heading` markers render as bold instead of literal
-// asterisks. Same idea used in the News page.
-function renderMd(text: string): string {
-  let safe = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  // Leading `#+ heading` → bold (headings inside a card look out of place).
-  safe = safe.replace(/^\s*(#{1,6})\s+(.+)$/gm, "<b>$2</b>");
-  // **bold**
-  safe = safe.replace(/\*\*([^*\n]+?)\*\*/g, "<b>$1</b>");
-  // *bold* — only when not part of ** (negative lookarounds keep us out
-  // of the already-replaced spans).
-  safe = safe.replace(
-    /(?<!\*)\*(?!\*)([^*\n]+?)(?<!\*)\*(?!\*)/g,
-    "<b>$1</b>",
-  );
-  return safe;
-}
 
 
 export default function Dashboard() {
