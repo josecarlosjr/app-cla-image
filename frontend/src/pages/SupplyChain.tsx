@@ -124,11 +124,21 @@ export default function SupplyChain() {
             "font-size": 10,
             "text-wrap": "wrap",
             "text-max-width": "90px",
+            // Labels sit on the page background, which changes with the
+            // theme. White text + thin dark outline was invisible on
+            // the light/sepia backgrounds. A solid dark pill behind the
+            // label keeps white text readable regardless of the page
+            // theme, without needing to re-init cytoscape on theme
+            // change.
+            "text-background-color": "#0f172a",
+            "text-background-opacity": 0.72,
+            "text-background-padding": 3,
+            "text-background-shape": "roundrectangle",
             width: "data(size)",
             height: "data(size)",
             "border-width": "data(borderWidth)",
             "border-color": "data(borderColor)",
-            "text-outline-width": 2,
+            "text-outline-width": 1,
             "text-outline-color": "#0f172a",
           } as any,
         },
@@ -298,7 +308,7 @@ export default function SupplyChain() {
           {analysis.alerts.map((alert, i) => (
             <div
               key={i}
-              className="text-sm text-slate-300 border-b border-slate-800 pb-2 last:border-0"
+              className="pia-md text-sm text-slate-300 border-b border-slate-800 pb-2 last:border-0"
               dangerouslySetInnerHTML={{
                 __html: renderMd(alert.text || ""),
               }}

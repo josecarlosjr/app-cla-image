@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { api } from "../api";
+import { renderMd } from "../utils/markdown";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
@@ -71,7 +72,28 @@ export default function Chat() {
                     : "bg-slate-800 text-slate-100"
                 }`}
               >
-                {m.content}
+                {/*
+                  Assistant replies are markdown (the same text the
+                  Telegram bot sends: **bold**, # / ## headings, > quotes,
+                  | tables |). Render the inline markers via the shared
+                  renderMd so bold/headings show formatted instead of raw
+                  asterisks. whitespace-pre-wrap on the bubble keeps the
+                  table/list line structure intact. User messages are
+                  plain input — rendered verbatim.
+
+                  Note: renderMd handles bold/italic/heading only. Pipe
+                  tables and `>` blockquotes stay as monospace-ish text;
+                  full table rendering would need a markdown library and
+                  is intentionally out of scope here.
+                */}
+                {m.role === "assistant" ? (
+                  <div
+                    className="pia-md"
+                    dangerouslySetInnerHTML={{ __html: renderMd(m.content) }}
+                  />
+                ) : (
+                  m.content
+                )}
               </div>
             </div>
           ))}
