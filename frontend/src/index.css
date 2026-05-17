@@ -10,3 +10,106 @@ body,
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
     Ubuntu, Cantarell, sans-serif;
 }
+
+/* ==========================================================================
+   Theme tokens.
+
+   The :root values ARE the original Tailwind slate palette, so the
+   default (dark) theme renders byte-identical to before this change.
+   A class on <html> (.theme-light / .theme-sepia, set by
+   src/utils/theme.ts) overrides the values; nothing else in the app
+   has to know themes exist.
+   ========================================================================== */
+
+:root {
+  --pia-bg: #020617;        /* slate-950 */
+  --pia-surface: #0f172a;   /* slate-900 */
+  --pia-surface-2: #1e293b; /* slate-800 */
+  --pia-border: #1e293b;    /* slate-800 */
+  --pia-border-2: #334155;  /* slate-700 */
+  --pia-text: #f1f5f9;      /* slate-100 */
+  --pia-text-2: #e2e8f0;    /* slate-200 */
+  --pia-text-3: #cbd5e1;    /* slate-300 */
+  --pia-muted: #94a3b8;     /* slate-400 */
+  --pia-dim: #64748b;       /* slate-500 */
+  --pia-dim-2: #475569;     /* slate-600 */
+}
+
+html.theme-light {
+  --pia-bg: #f1f5f9;        /* slate-100 */
+  --pia-surface: #ffffff;
+  --pia-surface-2: #e2e8f0; /* slate-200 */
+  --pia-border: #cbd5e1;    /* slate-300 */
+  --pia-border-2: #94a3b8;  /* slate-400 */
+  --pia-text: #0f172a;      /* slate-900 */
+  --pia-text-2: #1e293b;    /* slate-800 */
+  --pia-text-3: #334155;    /* slate-700 */
+  --pia-muted: #475569;     /* slate-600 */
+  --pia-dim: #64748b;       /* slate-500 */
+  --pia-dim-2: #64748b;
+}
+
+html.theme-sepia {
+  --pia-bg: #efe5d0;
+  --pia-surface: #f7efdd;
+  --pia-surface-2: #e8dcc2;
+  --pia-border: #d8c8a6;
+  --pia-border-2: #c4b088;
+  --pia-text: #3b2f1c;
+  --pia-text-2: #4a3c25;
+  --pia-text-3: #5b4a30;
+  --pia-muted: #6f5d40;
+  --pia-dim: #897552;
+  --pia-dim-2: #7a6747;
+}
+
+html {
+  background-color: var(--pia-bg);
+  color: var(--pia-text);
+}
+
+/* --------------------------------------------------------------------------
+   Remap the slate utilities the app actually uses to the tokens above.
+
+   These rules are intentionally UNLAYERED and placed after the
+   @tailwind directives: in the CSS cascade unlayered rules beat
+   layered ones (Tailwind v3 emits utilities in @layer utilities), so
+   these win with no !important. color-mix reproduces Tailwind's
+   `/NN` opacity utilities exactly when the token equals the original
+   slate value, so dark mode stays identical.
+   -------------------------------------------------------------------------- */
+
+.bg-slate-950 { background-color: var(--pia-bg); }
+.bg-slate-900 { background-color: var(--pia-surface); }
+.bg-slate-800 { background-color: var(--pia-surface-2); }
+.bg-slate-800\/40 {
+  background-color: color-mix(in srgb, var(--pia-surface-2) 40%, transparent);
+}
+.bg-slate-800\/50 {
+  background-color: color-mix(in srgb, var(--pia-surface-2) 50%, transparent);
+}
+.bg-slate-800\/30 {
+  background-color: color-mix(in srgb, var(--pia-surface-2) 30%, transparent);
+}
+
+.text-slate-100 { color: var(--pia-text); }
+.text-slate-200 { color: var(--pia-text-2); }
+.text-slate-300 { color: var(--pia-text-3); }
+.text-slate-400 { color: var(--pia-muted); }
+.text-slate-500 { color: var(--pia-dim); }
+.text-slate-600 { color: var(--pia-dim-2); }
+
+.border-slate-800 { border-color: var(--pia-border); }
+.border-slate-700 { border-color: var(--pia-border-2); }
+.border-slate-800\/50 {
+  border-color: color-mix(in srgb, var(--pia-border) 50%, transparent);
+}
+
+/* hover variants used in the sidebar, tables and buttons */
+.hover\:bg-slate-800:hover { background-color: var(--pia-surface-2); }
+.hover\:bg-slate-700:hover { background-color: var(--pia-border-2); }
+.hover\:bg-slate-800\/40:hover {
+  background-color: color-mix(in srgb, var(--pia-surface-2) 40%, transparent);
+}
+.hover\:border-slate-700:hover { border-color: var(--pia-border-2); }
+.hover\:border-slate-600:hover { border-color: var(--pia-border-2); }
