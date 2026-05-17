@@ -25,6 +25,7 @@ body,
   --pia-bg: #020617;        /* slate-950 */
   --pia-surface: #0f172a;   /* slate-900 */
   --pia-surface-2: #1e293b; /* slate-800 */
+  --pia-surface-3: #334155; /* slate-700 */
   --pia-border: #1e293b;    /* slate-800 */
   --pia-border-2: #334155;  /* slate-700 */
   --pia-text: #f1f5f9;      /* slate-100 */
@@ -39,6 +40,7 @@ html.theme-light {
   --pia-bg: #f1f5f9;        /* slate-100 */
   --pia-surface: #ffffff;
   --pia-surface-2: #e2e8f0; /* slate-200 */
+  --pia-surface-3: #cbd5e1; /* slate-300 */
   --pia-border: #cbd5e1;    /* slate-300 */
   --pia-border-2: #94a3b8;  /* slate-400 */
   --pia-text: #0f172a;      /* slate-900 */
@@ -53,6 +55,7 @@ html.theme-sepia {
   --pia-bg: #efe5d0;
   --pia-surface: #f7efdd;
   --pia-surface-2: #e8dcc2;
+  --pia-surface-3: #ddcdaa;
   --pia-border: #d8c8a6;
   --pia-border-2: #c4b088;
   --pia-text: #3b2f1c;
@@ -82,14 +85,24 @@ html {
 .bg-slate-950 { background-color: var(--pia-bg); }
 .bg-slate-900 { background-color: var(--pia-surface); }
 .bg-slate-800 { background-color: var(--pia-surface-2); }
-.bg-slate-800\/40 {
-  background-color: color-mix(in srgb, var(--pia-surface-2) 40%, transparent);
+.bg-slate-700 { background-color: var(--pia-surface-3); }
+.bg-slate-900\/40 {
+  background-color: color-mix(in srgb, var(--pia-surface) 40%, transparent);
+}
+.bg-slate-800\/60 {
+  background-color: color-mix(in srgb, var(--pia-surface-2) 60%, transparent);
 }
 .bg-slate-800\/50 {
   background-color: color-mix(in srgb, var(--pia-surface-2) 50%, transparent);
 }
+.bg-slate-800\/40 {
+  background-color: color-mix(in srgb, var(--pia-surface-2) 40%, transparent);
+}
 .bg-slate-800\/30 {
   background-color: color-mix(in srgb, var(--pia-surface-2) 30%, transparent);
+}
+.bg-slate-700\/40 {
+  background-color: color-mix(in srgb, var(--pia-surface-3) 40%, transparent);
 }
 
 .text-slate-100 { color: var(--pia-text); }
@@ -104,12 +117,47 @@ html {
 .border-slate-800\/50 {
   border-color: color-mix(in srgb, var(--pia-border) 50%, transparent);
 }
+.border-slate-800\/40 {
+  border-color: color-mix(in srgb, var(--pia-border) 40%, transparent);
+}
 
 /* hover variants used in the sidebar, tables and buttons */
 .hover\:bg-slate-800:hover { background-color: var(--pia-surface-2); }
-.hover\:bg-slate-700:hover { background-color: var(--pia-border-2); }
+.hover\:bg-slate-700:hover { background-color: var(--pia-surface-3); }
+.hover\:bg-slate-600:hover { background-color: var(--pia-border-2); }
 .hover\:bg-slate-800\/40:hover {
   background-color: color-mix(in srgb, var(--pia-surface-2) 40%, transparent);
 }
 .hover\:border-slate-700:hover { border-color: var(--pia-border-2); }
 .hover\:border-slate-600:hover { border-color: var(--pia-border-2); }
+
+/* --------------------------------------------------------------------------
+   Markdown-rendered content (renderMd output / News pattern analyses).
+
+   Pages used hardcoded Tailwind arbitrary variants like
+   `[&_strong]:text-white` and `[&_code]:bg-slate-800`. Those generate
+   their own selectors that the slate remap above never touches, so in
+   the light/sepia themes bold text went invisible (white on white) and
+   inline code stayed a dark box. Centralise the styling here, keyed to
+   the theme tokens, and have every markdown block carry `.pia-md`.
+   -------------------------------------------------------------------------- */
+
+.pia-md strong,
+.pia-md b {
+  color: var(--pia-text);
+  font-weight: 600;
+}
+
+.pia-md i,
+.pia-md em {
+  font-style: italic;
+}
+
+.pia-md code {
+  background-color: var(--pia-surface-2);
+  color: var(--pia-text);
+  padding: 0.0625rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
