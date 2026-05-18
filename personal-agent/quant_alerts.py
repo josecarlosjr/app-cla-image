@@ -5,6 +5,14 @@ written by quant_detectors, filters anything crossing severity
 thresholds, synthesises a short Portuguese narrative via Haiku, and
 posts to Telegram.
 
+Phase C (Knowledge Graph integration): before synthesising, each
+alerting ticker is enriched with a 1-2 hop walk of the approved
+knowledge graph (graph_relationships) so the narrative can talk about
+plausible dependency/contagion chains pulled from the news coverage —
+e.g. "SPY -> tech_sector -> nvidia -> tsmc". This is enrichment only:
+if the graph is sparse (expected until it accumulates a few weeks of
+financial-entity coverage) the narrative is exactly what it was before.
+
 Triggering rules per ticker:
 
   lppl_bubble_prob > 0.85  -> HIGH   (severe bubble signature)
@@ -28,6 +36,7 @@ import httpx
 
 from llm import generate_text, MODEL_HAIKU
 import pg_database as pg
+import database as db
 from telegram_format import to_telegram_html
 from log_config import setup_logging
 
@@ -46,6 +55,30 @@ LPPL_HIGH = 0.85
 LPPL_MED = 0.70
 COOLDOWN_DAYS = 7
 MAX_TICKERS_IN_NARRATIVE = 5
+
+# Phase C — knowledge-graph enrichment tuning.
+MAX_GRAPH_EDGES_PER_TICKER = 6
+
+# Map each watchlist ticker to canonical-name fragments likely to show
+# up in the news-derived knowledge graph. Matching is fuzzy (substring,
+# both directions, lowercase) so "sp500" / "s&p_500" / "spy_etf" all
+# hook SPY without an exhaustive alias table. Unknown tickers fall back
+# to the bare symbol (e.g. "DOGE-USD" -> "doge").
+TICKER_ENTITY_HINTS: dict[str, list[str]] = {
+    "SPY": ["sp500", "s&p", "sp_500", "us_equities", "equities",
+            "stock_market", "spy"],
+    "QQQ": ["nasdaq", "tech_stocks", "big_tech", "qqq"],
+    "IWM": ["russell", "small_cap", "iwm"],
+    "BTC-USD": ["bitcoin", "btc"],
+    "ETH-USD": ["ethereum", "eth"],
+    "XLK": ["technology_sector", "tech_sector", "semiconductor",
+            "software", "xlk"],
+    "XLE": ["energy_sector", "crude_oil", "oil", "opec", "xle"],
+    "XLF": ["financial_sector", "banks", "financials", "xlf"],
+    "GLD": ["gold", "precious_metal", "gld"],
+    "TLT": ["treasur", "long_bond", "bonds", "federal_reserve", "tlt"],
+    "HYG": ["high_yield", "junk_bond", "corporate_bond", "credit", "hyg"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -116,24 +149,128 @@ def _should_alert(state: dict, ticker: str, severity: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Phase C — knowledge-graph context
+# ---------------------------------------------------------------------------
+
+def _ticker_seed_canonicals(ticker: str, entities: list[dict]) -> set[str]:
+    """Graph entities whose canonical name fuzzy-matches the ticker."""
+    hints = TICKER_ENTITY_HINTS.get(ticker)
+    if not hints:
+        hints = [ticker.split("-")[0].lower()]
+    seeds: set[str] = set()
+    for ent in entities:
+        canon = (ent.get("canonical") or "").lower()
+        if not canon:
+            continue
+        if any(h in canon or canon in h for h in hints):
+            seeds.add(ent["canonical"])
+    return seeds
+
+
+def _fetch_graph_context(ticker: str, graph: dict) -> list[str]:
+    """1-2 hop walk of the approved knowledge graph around `ticker`.
+
+    Returns human-readable edge strings (subject --predicate--> object),
+    ranked by mention_count*confidence and capped so the prompt stays
+    tight. Empty list when the graph has nothing relevant — that's the
+    expected state until the financial ontology accumulates coverage,
+    and the narrative simply omits the graph section in that case.
+
+    `graph` is fetched once by the caller (get_graph_for_display) and
+    passed in, so this stays O(edges) with no extra DB round-trips per
+    ticker.
+    """
+    entities = graph.get("entities", [])
+    rels = graph.get("relationships", [])
+    if not rels:
+        return []
+
+    seeds = _ticker_seed_canonicals(ticker, entities)
+    if not seeds:
+        return []
+
+    # Hop 1: edges that touch a seed entity. Remember the far endpoint
+    # so hop 2 can extend the chain (SPY -> tech_sector -> nvidia).
+    hop1: list[dict] = []
+    frontier: set[str] = set()
+    for r in rels:
+        s = r.get("subject_canonical", "")
+        o = r.get("object_canonical", "")
+        if s in seeds or o in seeds:
+            hop1.append(r)
+            frontier.add(o if s in seeds else s)
+
+    # Hop 2: edges off the frontier, one level further out, excluding
+    # edges already collected in hop 1.
+    seen_ids = {r.get("id") for r in hop1}
+    hop2 = [
+        r for r in rels
+        if r.get("id") not in seen_ids
+        and (r.get("subject_canonical") in frontier
+             or r.get("object_canonical") in frontier)
+    ]
+
+    ranked = sorted(
+        hop1 + hop2,
+        key=lambda r: r.get("mention_count", 1) * r.get("confidence", 0.5),
+        reverse=True,
+    )[:MAX_GRAPH_EDGES_PER_TICKER]
+
+    return [
+        f"{r.get('subject_name') or r.get('subject_canonical')} "
+        f"--{r.get('predicate')}--> "
+        f"{r.get('object_name') or r.get('object_canonical')} "
+        f"({r.get('mention_count', 1)}x)"
+        for r in ranked
+    ]
+
+
+def _load_approved_graph() -> dict:
+    """Fetch the approved graph once. Never raises — graph context is
+    enrichment, not the alerting critical path."""
+    try:
+        return db.get_graph_for_display(status="approved")
+    except Exception as e:
+        logger.warning("Knowledge-graph fetch failed (%s); "
+                        "continuing without graph context", e)
+        return {"entities": [], "relationships": []}
+
+
+# ---------------------------------------------------------------------------
 # Narrative synthesis (Haiku) + Telegram send
 # ---------------------------------------------------------------------------
 
 async def _synthesise_narrative(alerts: list[dict]) -> str:
-    payload = json.dumps(
-        [
-            {
-                "ticker": a["ticker"],
-                "severity": a["severity"],
-                "reasons": a["reasons"],
-                "close": a.get("close"),
-                "change_pct_30d": a.get("change_pct_30d"),
-            }
-            for a in alerts[:MAX_TICKERS_IN_NARRATIVE]
-        ],
-        ensure_ascii=False,
-        indent=2,
-    )
+    graph = _load_approved_graph()
+
+    enriched: list[dict] = []
+    any_graph = False
+    for a in alerts[:MAX_TICKERS_IN_NARRATIVE]:
+        ctx = _fetch_graph_context(a["ticker"], graph)
+        if ctx:
+            any_graph = True
+        enriched.append({
+            "ticker": a["ticker"],
+            "severity": a["severity"],
+            "reasons": a["reasons"],
+            "close": a.get("close"),
+            "change_pct_30d": a.get("change_pct_30d"),
+            "graph_context": ctx,
+        })
+
+    payload = json.dumps(enriched, ensure_ascii=False, indent=2)
+
+    graph_instruction = ""
+    if any_graph:
+        graph_instruction = (
+            "\n\nAlguns tickers trazem 'graph_context': relacoes "
+            "(subject --predicado--> object) extraidas automaticamente "
+            "da cobertura de noticias. Use-as para enriquecer a "
+            "*INTERPRETACAO* com cadeias de dependencia/contagio "
+            "plausiveis. OBRIGATORIO: ao citar qualquer relacao do "
+            "graph_context, deixe explicito que sao padroes MENCIONADOS "
+            "na cobertura, NAO relacoes causais comprovadas."
+        )
 
     prompt = f"""\
 Voce e o assistente quantitativo do Jose Carlos. Os tickers abaixo \
@@ -141,7 +278,7 @@ cruzaram thresholds de detectores de bolha (LPPL) e/ou explosividade \
 estatistica (GSADF). Gere um alerta curto e direto em portugues do Brasil.
 
 Dados:
-{payload}
+{payload}{graph_instruction}
 
 Estrutura obrigatoria:
 
@@ -154,16 +291,18 @@ Para cada ticker:
 
 *INTERPRETACAO*
 [1-2 frases sobre o que isso significa no conjunto. Mencione \
-concentracao setorial se aplicavel.]
+concentracao setorial se aplicavel. Se houver graph_context relevante, \
+trace a cadeia de contagio plausivel aqui.]
 
 *ACAO SUGERIDA*
 [1 sugestao conservadora: 'considere revisar', 'avalie stop', \
 'pondere reducao'. Nao prescritivo, nao alarmista.]
 
 Lembrete obrigatorio no final: 'LPPL e GSADF detectam padroes \
-estatisticos, NAO predizem timing exato de correcao.'
+estatisticos, NAO predizem timing exato de correcao. Relacoes do grafo \
+sao mencoes na cobertura, nao causalidade comprovada.'
 
-Maximo 250 palavras.\
+Maximo 280 palavras.\
 """
 
     text = await generate_text(
