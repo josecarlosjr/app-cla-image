@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { api, GraphEntity, GraphRelationship, GraphStats } from "../api";
 
 const TYPE_COLORS: Record<string, string> = {
+  // Original geopolitical / tech ontology (8)
   company: "#3b82f6",
   country: "#ef4444",
   person: "#8b5cf6",
@@ -10,6 +11,12 @@ const TYPE_COLORS: Record<string, string> = {
   product: "#06b6d4",
   organization: "#ec4899",
   event: "#f97316",
+  // Financial ontology added in Phase A. Distinct hues so the
+  // financial subgraph reads at a glance against the originals.
+  asset_class: "#14b8a6",
+  financial_instrument: "#6366f1",
+  central_bank: "#eab308",
+  regulator: "#84cc16",
 };
 
 const PREDICATE_LABELS: Record<string, string> = {
@@ -27,7 +34,45 @@ const PREDICATE_LABELS: Record<string, string> = {
   develops: "desenvolve",
   disrupts: "disrupta",
   sanctions: "sanciona",
+  // Financial predicates added in Phase B
+  inflates: "infla / pressiona alta",
+  triggers_default: "dispara default em",
 };
+
+// The Phase A financial entity types — used by the "Financeiro" quick
+// filter, which the single-value API entity_type param can't express,
+// so that grouping is applied client-side over the fetched page.
+const FINANCIAL_TYPES = [
+  "asset_class",
+  "financial_instrument",
+  "central_bank",
+  "regulator",
+];
+
+const FINANCIAL_PREDICATES = ["inflates", "triggers_default", "depends_on"];
+
+const ENTITY_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Todos os tipos" },
+  { value: "__fin__", label: "Financeiro (4 tipos)" },
+  { value: "company", label: "company" },
+  { value: "country", label: "country" },
+  { value: "person", label: "person" },
+  { value: "technology", label: "technology" },
+  { value: "mineral", label: "mineral" },
+  { value: "product", label: "product" },
+  { value: "organization", label: "organization" },
+  { value: "event", label: "event" },
+  { value: "asset_class", label: "asset_class" },
+  { value: "financial_instrument", label: "financial_instrument" },
+  { value: "central_bank", label: "central_bank" },
+  { value: "regulator", label: "regulator" },
+];
+
+const PREDICATE_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Todos os predicados" },
+  { value: "__fin__", label: "Financeiro (infla / default / depende)" },
+  ...Object.keys(PREDICATE_LABELS).map((p) => ({ value: p, label: p })),
+];
 
 type Tab = "entities" | "relationships";
 type Filter = "staged" | "approved" | "rejected" | "";
@@ -35,6 +80,12 @@ type Filter = "staged" | "approved" | "rejected" | "";
 export default function GraphReview() {
   const [tab, setTab] = useState<Tab>("entities");
   const [filter, setFilter] = useState<Filter>("staged");
+  // "" = all, "__fin__" = financial group (client-side), or a concrete
+  // entity_type (passed to the API for an efficient server-side filter).
+  const [entityType, setEntityType] = useState<string>("");
+  // Relationships have no server-side predicate filter, so this one is
+  // always applied client-side over the fetched page.
+  const [predicateFilter, setPredicateFilter] = useState<string>("");
   const [entities, setEntities] = useState<GraphEntity[]>([]);
   const [relationships, setRelationships] = useState<GraphRelationship[]>([]);
   const [stats, setStats] = useState<GraphStats | null>(null);
@@ -44,11 +95,23 @@ export default function GraphReview() {
 
   const load = useCallback(async () => {
     try {
+      const entityParams: Record<string, string | number> = {
+        status: filter,
+        limit: 200,
+      };
+      // Only push a concrete type to the API. "" and "__fin__" must
+      // fetch unfiltered (the latter is grouped client-side below).
+      if (entityType && entityType !== "__fin__") {
+        entityParams.entity_type = entityType;
+      }
+
       const [statsRes, dataRes] = await Promise.all([
         api.get("/graph/stats"),
         tab === "entities"
-          ? api.get("/graph/entities", { params: { status: filter, limit: 200 } })
-          : api.get("/graph/relationships", { params: { status: filter, limit: 200 } }),
+          ? api.get("/graph/entities", { params: entityParams })
+          : api.get("/graph/relationships", {
+              params: { status: filter, limit: 200 },
+            }),
       ]);
       setStats(statsRes.data);
       if (tab === "entities") {
@@ -60,11 +123,31 @@ export default function GraphReview() {
     } catch (e) {
       console.error(e);
     }
-  }, [tab, filter]);
+  }, [tab, filter, entityType]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Client-side groupings the API can't express in one call.
+  const displayedEntities = useMemo(() => {
+    if (entityType === "__fin__") {
+      return entities.filter((e) => FINANCIAL_TYPES.includes(e.entity_type));
+    }
+    return entities;
+  }, [entities, entityType]);
+
+  const displayedRelationships = useMemo(() => {
+    if (predicateFilter === "__fin__") {
+      return relationships.filter((r) =>
+        FINANCIAL_PREDICATES.includes(r.predicate),
+      );
+    }
+    if (predicateFilter) {
+      return relationships.filter((r) => r.predicate === predicateFilter);
+    }
+    return relationships;
+  }, [relationships, predicateFilter]);
 
   const handleReview = async (
     type: "entities" | "relationships",
@@ -102,8 +185,9 @@ export default function GraphReview() {
   };
 
   const selectAll = () => {
-    const items = tab === "entities" ? entities : relationships;
-    if (selectedIds.size === items.length) {
+    const items =
+      tab === "entities" ? displayedEntities : displayedRelationships;
+    if (selectedIds.size === items.length && items.length > 0) {
       setSelectedIds(new Set());
     } else {
       setSelectedIds(new Set(items.map((i) => i.id)));
@@ -176,7 +260,7 @@ export default function GraphReview() {
         </div>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 flex-wrap">
         <div className="flex bg-slate-900 rounded-lg border border-slate-800 overflow-hidden">
           <button
             onClick={() => { setTab("entities"); setSelectedIds(new Set()); }}
@@ -212,6 +296,35 @@ export default function GraphReview() {
           ))}
         </div>
 
+        {/* Type / predicate filter — the Phase D financial-subgraph view */}
+        {tab === "entities" ? (
+          <select
+            value={entityType}
+            onChange={(e) => setEntityType(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded px-3 py-1 text-xs"
+            title="Filtrar por tipo de entidade"
+          >
+            {ENTITY_TYPE_OPTIONS.map((o) => (
+              <option key={o.value || "all"} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <select
+            value={predicateFilter}
+            onChange={(e) => setPredicateFilter(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded px-3 py-1 text-xs"
+            title="Filtrar por predicado"
+          >
+            {PREDICATE_OPTIONS.map((o) => (
+              <option key={o.value || "all"} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        )}
+
         {selectedIds.size > 0 && filter === "staged" && (
           <div className="flex gap-2 ml-auto">
             <button
@@ -239,7 +352,10 @@ export default function GraphReview() {
                   <th className="p-3 w-8">
                     <input
                       type="checkbox"
-                      checked={selectedIds.size === entities.length && entities.length > 0}
+                      checked={
+                        selectedIds.size === displayedEntities.length &&
+                        displayedEntities.length > 0
+                      }
                       onChange={selectAll}
                       className="rounded border-slate-600"
                     />
@@ -254,7 +370,7 @@ export default function GraphReview() {
               </tr>
             </thead>
             <tbody>
-              {entities.map((e) => (
+              {displayedEntities.map((e) => (
                 <tr key={e.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                   {filter === "staged" && (
                     <td className="p-3">
@@ -305,10 +421,15 @@ export default function GraphReview() {
                   )}
                 </tr>
               ))}
-              {entities.length === 0 && (
+              {displayedEntities.length === 0 && (
                 <tr>
                   <td colSpan={7} className="p-8 text-center text-slate-500">
                     Nenhuma entidade {filter || "encontrada"}
+                    {entityType === "__fin__"
+                      ? " do tipo financeiro"
+                      : entityType
+                      ? ` do tipo ${entityType}`
+                      : ""}
                   </td>
                 </tr>
               )}
@@ -324,7 +445,10 @@ export default function GraphReview() {
                   <th className="p-3 w-8">
                     <input
                       type="checkbox"
-                      checked={selectedIds.size === relationships.length && relationships.length > 0}
+                      checked={
+                        selectedIds.size === displayedRelationships.length &&
+                        displayedRelationships.length > 0
+                      }
                       onChange={selectAll}
                       className="rounded border-slate-600"
                     />
@@ -339,7 +463,7 @@ export default function GraphReview() {
               </tr>
             </thead>
             <tbody>
-              {relationships.map((r) => (
+              {displayedRelationships.map((r) => (
                 <tr key={r.id} className="border-b border-slate-800/50 hover:bg-slate-800/30">
                   {filter === "staged" && (
                     <td className="p-3">
@@ -386,10 +510,15 @@ export default function GraphReview() {
                   )}
                 </tr>
               ))}
-              {relationships.length === 0 && (
+              {displayedRelationships.length === 0 && (
                 <tr>
                   <td colSpan={7} className="p-8 text-center text-slate-500">
                     Nenhuma relacao {filter || "encontrada"}
+                    {predicateFilter === "__fin__"
+                      ? " com predicado financeiro"
+                      : predicateFilter
+                      ? ` com predicado ${predicateFilter}`
+                      : ""}
                   </td>
                 </tr>
               )}
