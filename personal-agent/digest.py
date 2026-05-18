@@ -38,6 +38,36 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
 
+# Month names hardcoded on purpose: the slim python image doesn't ship
+# the pt_BR locale, so locale.setlocale / strftime("%B") would fall back
+# to English (or fail). This keeps the digest date in Portuguese with
+# zero system dependency.
+_PT_MONTHS = [
+    "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+]
+
+
+def _today_str() -> str:
+    """Today's date as e.g. '19 de maio de 2026'.
+
+    The bug this fixes: the synthesis prompt asked the LLM for "data de
+    hoje" but never told it what today was, so the model filled in a
+    hallucinated date (observed: "19 de maio de 2025" — a year off).
+    We now compute it here and pass it in explicitly.
+
+    DIGEST_UTC_OFFSET (integer hours, default 0) shifts UTC to the
+    user's civil timezone so the date is correct near midnight. e.g.
+    -3 for America/Sao_Paulo, +1 for Europe/Lisbon (summer). Default 0
+    keeps behaviour unchanged for UTC deployments.
+    """
+    try:
+        offset = int(os.getenv("DIGEST_UTC_OFFSET", "0"))
+    except (ValueError, TypeError):
+        offset = 0
+    now = datetime.now(timezone.utc) + timedelta(hours=offset)
+    return f"{now.day} de {_PT_MONTHS[now.month - 1]} de {now.year}"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -206,15 +236,27 @@ def _is_updated_today(date_str: str) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _synthesise(mode: str, data: dict) -> str:
+    today = _today_str()
+
+    # Authoritative date directive at the very top of the prompt. The
+    # model never knows the real date on its own; without this it
+    # hallucinates (observed a full year off). Stated explicitly here
+    # AND referenced from the structure placeholders below.
+    date_directive = (
+        f"IMPORTANTE: hoje e {today}. Use EXATAMENTE esta data sempre "
+        f"que a estrutura pedir a data de hoje. NUNCA invente, suponha "
+        f"ou use outra data ou outro ano.\n\n"
+    )
+
     if mode == "morning":
-        prompt = f"""\
+        prompt = date_directive + f"""\
 Gere um BRIEFING MATINAL (09h) em portugues do Brasil para o usuario \
 Jose Carlos (DevOps/Platform Engineer). Seja direto, conciso \
 e acionavel. Use emojis com moderacao.
 
 Estrutura obrigatoria:
 
-*BOM DIA, JOSE CARLOS* [saudacao breve + data de hoje]
+*BOM DIA, JOSE CARLOS* [saudacao breve + a data de hoje ({today})]
 
 *MERCADOS* [precos + variacoes noturnas, so os relevantes]
 {json.dumps(data.get('prices', {}), indent=2, ensure_ascii=False)[:500]}
@@ -236,13 +278,13 @@ Estrutura obrigatoria:
 Sugira 3 acoes concretas para hoje. Maximo 300 palavras total.\
 """
     else:
-        prompt = f"""\
+        prompt = date_directive + f"""\
 Gere um RELATORIO NOTURNO (21h) em portugues do Brasil para o usuario \
 Jose Carlos. Reflexivo mas conciso.
 
 Estrutura obrigatoria:
 
-*BOA NOITE* [data de hoje, saudacao breve]
+*BOA NOITE* [a data de hoje ({today}), saudacao breve]
 
 *RESUMO DO DIA*
 - {data.get('conversations', 0)} conversas com o agente
