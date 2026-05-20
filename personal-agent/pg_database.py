@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 
 _DSN: str | None = None
 
+# Macro-risk panel keeps ~7 years of quarterly history per series so
+# the sparkline captures the pre/post-COVID regime and the 2022 rate
+# cycle. ~28 points/series, payload still small.
+_MACRO_SERIES_DAYS = 365 * 7
+
 
 def _build_dsn() -> str:
     dsn = os.getenv("DATABASE_URL")
@@ -193,6 +198,37 @@ def get_indicator_series(series_id: str, days: int = 365) -> list[dict]:
             {"ts": r["ts"].isoformat(), "value": float(r["value"])}
             for r in cur.fetchall()
         ]
+
+
+def get_indicators_series_batch(
+    series_ids: list[str], days: int = 365,
+) -> dict[str, list[dict]]:
+    """Time series for many series_ids in a single round trip.
+
+    Returns {series_id: [{ts, value}, ...], ...}. Every requested id
+    is present in the result (empty list when there's no data within
+    the window). One SELECT with `WHERE series_id = ANY(%s)`, grouped
+    client-side — replaces N separate connect() calls for the
+    macro-risk dashboard panel which needs ~22 series at once.
+    """
+    if not series_ids:
+        return {}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    out: dict[str, list[dict]] = {sid: [] for sid in series_ids}
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT series_id, ts, value
+               FROM quant_indicators
+               WHERE series_id = ANY(%s) AND ts >= %s
+               ORDER BY series_id, ts""",
+            (series_ids, cutoff),
+        )
+        for r in cur.fetchall():
+            out[r["series_id"]].append({
+                "ts": r["ts"].isoformat(),
+                "value": float(r["value"]),
+            })
+    return out
 
 
 def get_latest_by_prefix(prefix: str) -> dict[str, dict]:
@@ -391,31 +427,51 @@ def get_watchlist() -> list[dict]:
 
 
 def _build_macro_risk() -> dict:
-    """Latest credit-to-GDP gap (BIS) + house price index (Eurostat,
-    BPstat). All three sources write into the same quant_indicators
-    hypertable with distinct id prefixes, so we just pull by prefix
-    and the country/series set is whatever the ingesters produced.
+    """Latest + ~7y series for credit gap (BIS), HPI (Eurostat),
+    BPstat. All three sources write into quant_indicators with
+    distinct id prefixes, so the country/series set is whatever the
+    ingesters produced.
 
-    HPI series get a y-o-y % attached so the panel can show a
-    momentum gauge alongside the index level.
+    Each entry carries the latest point AND the recent time series
+    (for sparklines), plus a y-o-y % for the HPI/BPstat momentum
+    gauge. Series come back from a single batch query per source so
+    the dashboard payload is built in O(3) round trips instead of
+    O(series_count).
     """
     credit_raw = get_latest_by_prefix("BIS_CREDIT_GAP_")
     hpi_raw = get_latest_by_prefix("EUROSTAT_HPI_")
     bpstat_raw = get_latest_by_prefix("BPSTAT_")
 
+    credit_series = get_indicators_series_batch(
+        list(credit_raw.keys()), _MACRO_SERIES_DAYS,
+    )
+    hpi_series = get_indicators_series_batch(
+        list(hpi_raw.keys()), _MACRO_SERIES_DAYS,
+    )
+    bpstat_series = get_indicators_series_batch(
+        list(bpstat_raw.keys()), _MACRO_SERIES_DAYS,
+    )
+
     credit_gap = {
-        sid.replace("BIS_CREDIT_GAP_", ""): rec
+        sid.replace("BIS_CREDIT_GAP_", ""): {
+            **rec,
+            "series": credit_series.get(sid, []),
+        }
         for sid, rec in credit_raw.items()
     }
     hpi = {
         sid.replace("EUROSTAT_HPI_", ""): {
-            **rec, "yoy_pct": get_yoy_change(sid),
+            **rec,
+            "yoy_pct": get_yoy_change(sid),
+            "series": hpi_series.get(sid, []),
         }
         for sid, rec in hpi_raw.items()
     }
     bpstat = {
         sid.replace("BPSTAT_", ""): {
-            **rec, "yoy_pct": get_yoy_change(sid),
+            **rec,
+            "yoy_pct": get_yoy_change(sid),
+            "series": bpstat_series.get(sid, []),
         }
         for sid, rec in bpstat_raw.items()
     }
