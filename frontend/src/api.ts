@@ -300,8 +300,18 @@ export type QuantWatchlistRow = {
 // one of the three new ingesters (BIS credit-to-GDP gap, Eurostat HPI,
 // BPstat) writing into quant_indicators. Empty until the corresponding
 // weekly cron has run at least once.
-export type QuantLatestPoint = { ts: string; value: number };
-export type QuantHpiPoint = QuantLatestPoint & { yoy_pct: number | null };
+//
+// `series` (Phase B) carries the recent ~7 years of quarterly
+// observations for the sparkline. Optional so an older backend that
+// hasn't shipped Phase B still type-checks against the frontend.
+export type QuantLatestPoint = {
+  ts: string;
+  value: number;
+  series?: QuantSeriesPoint[];
+};
+export type QuantHpiPoint = QuantLatestPoint & {
+  yoy_pct: number | null;
+};
 
 export type QuantMacroRisk = {
   credit_gap: Record<string, QuantLatestPoint>;

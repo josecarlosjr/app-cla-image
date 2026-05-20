@@ -134,39 +134,70 @@ const STATUS_LABEL: Record<string, string> = {
 // threshold — but 10 %+ is widely flagged as froth in real-estate
 // commentary, and < 5 % is normal trend growth.
 
-function creditGapStatus(v: number): { label: string; cls: string } {
+type Status = { label: string; cls: string; stroke: string };
+
+function creditGapStatus(v: number): Status {
   if (v < 0) {
     return {
       label: "deleveraging",
       cls: "bg-blue-500/20 text-blue-400",
+      stroke: "#3b82f6",
     };
   }
   if (v < 2) {
     return {
       label: "abaixo trigger",
       cls: "bg-emerald-500/20 text-emerald-400",
+      stroke: "#10b981",
     };
   }
   if (v < 10) {
     return {
       label: "elevado (>trigger CCyB)",
       cls: "bg-amber-500/20 text-amber-400",
+      stroke: "#f59e0b",
     };
   }
   return {
     label: "máximo (>10)",
     cls: "bg-red-500/20 text-red-400",
+    stroke: "#ef4444",
   };
 }
 
-function hpiYoyStatus(v: number | null): { label: string; cls: string } {
-  if (v === null) return { label: "—", cls: "bg-slate-500/20 text-slate-400" };
-  if (v < 0) return { label: "queda", cls: "bg-blue-500/20 text-blue-400" };
-  if (v < 5) return { label: "normal", cls: "bg-emerald-500/20 text-emerald-400" };
-  if (v < 10) return { label: "elevado", cls: "bg-amber-500/20 text-amber-400" };
+function hpiYoyStatus(v: number | null): Status {
+  if (v === null) {
+    return {
+      label: "—",
+      cls: "bg-slate-500/20 text-slate-400",
+      stroke: "#64748b",
+    };
+  }
+  if (v < 0) {
+    return {
+      label: "queda",
+      cls: "bg-blue-500/20 text-blue-400",
+      stroke: "#3b82f6",
+    };
+  }
+  if (v < 5) {
+    return {
+      label: "normal",
+      cls: "bg-emerald-500/20 text-emerald-400",
+      stroke: "#10b981",
+    };
+  }
+  if (v < 10) {
+    return {
+      label: "elevado",
+      cls: "bg-amber-500/20 text-amber-400",
+      stroke: "#f59e0b",
+    };
+  }
   return {
     label: "potencial bolha",
     cls: "bg-red-500/20 text-red-400",
+    stroke: "#ef4444",
   };
 }
 
@@ -180,6 +211,59 @@ const BPSTAT_LABELS: Record<string, string> = {
   "12559647": "Habitação PT — sibling (novo/existente?)",
   "5739035": "Habitação PT — Total (var. ano-a-ano)",
 };
+
+// ---------------------------------------------------------------------------
+// Sparkline (Phase B integration)
+// ---------------------------------------------------------------------------
+//
+// Tiny inline line chart for the macro-risk rows. recharts is already
+// a dep so no extra payload. Disable animation (jarring inside a
+// dense table) and skip axes entirely — the row already shows the
+// current value, the sparkline is just for trajectory.
+
+function Sparkline({
+  data,
+  color,
+  width = 90,
+  height = 28,
+  referenceY,
+}: {
+  data: QuantSeriesPoint[] | undefined;
+  color: string;
+  width?: number;
+  height?: number;
+  referenceY?: number;
+}) {
+  if (!data || data.length < 2) {
+    return <span className="text-slate-600 text-xs">—</span>;
+  }
+  return (
+    <div style={{ width, height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart
+          data={data}
+          margin={{ top: 2, right: 2, bottom: 2, left: 2 }}
+        >
+          {referenceY !== undefined && (
+            <ReferenceLine
+              y={referenceY}
+              stroke="#475569"
+              strokeDasharray="2 2"
+            />
+          )}
+          <Line
+            type="monotone"
+            dataKey="value"
+            stroke={color}
+            dot={false}
+            strokeWidth={1.5}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Charts
@@ -300,7 +384,7 @@ function EmptyChart() {
 }
 
 // ---------------------------------------------------------------------------
-// Macro-risk panel (Phase A integration)
+// Macro-risk panel (Phase A integration + Phase B sparklines)
 // ---------------------------------------------------------------------------
 
 function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
@@ -330,7 +414,7 @@ function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
   return (
     <Panel
       title="Risco macro / imobiliário"
-      subtitle="BIS credit-to-GDP gap (>2% = trigger CCyB Basel III, >10% = máximo histórico) + Eurostat HPI / BPstat (índice 2015=100 + variação a/a)."
+      subtitle="BIS credit-to-GDP gap (>2% = trigger CCyB Basel III, >10% = máximo histórico) + Eurostat HPI / BPstat (índice 2015=100 + variação a/a). Sparkline = últimos ~7 anos."
     >
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {creditEntries.length > 0 && (
@@ -343,8 +427,8 @@ function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
                 <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
                   <th className="py-2 text-left">País</th>
                   <th className="py-2 text-right">Gap %</th>
+                  <th className="py-2 text-center">Trajetória</th>
                   <th className="py-2 text-right">Status</th>
-                  <th className="py-2 text-right">Último</th>
                 </tr>
               </thead>
               <tbody>
@@ -362,13 +446,19 @@ function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
                         {rec.value > 0 ? "+" : ""}
                         {rec.value.toFixed(2)}%
                       </td>
+                      <td className="py-2">
+                        <div className="flex justify-center">
+                          <Sparkline
+                            data={rec.series}
+                            color={status.stroke}
+                            referenceY={0}
+                          />
+                        </div>
+                      </td>
                       <td className="py-2 text-right">
                         <span className={`text-xs px-2 py-0.5 rounded ${status.cls}`}>
                           {status.label}
                         </span>
-                      </td>
-                      <td className="py-2 text-right text-slate-500 text-xs">
-                        {formatDate(rec.ts)}
                       </td>
                     </tr>
                   );
@@ -389,6 +479,7 @@ function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
                   <th className="py-2 text-left">Geo</th>
                   <th className="py-2 text-right">Nível</th>
                   <th className="py-2 text-right">Var. a/a</th>
+                  <th className="py-2 text-center">Trajetória</th>
                   <th className="py-2 text-right">Status</th>
                 </tr>
               </thead>
@@ -406,6 +497,14 @@ function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
                       </td>
                       <td className="py-2 text-right font-mono">
                         {formatPct(rec.yoy_pct)}
+                      </td>
+                      <td className="py-2">
+                        <div className="flex justify-center">
+                          <Sparkline
+                            data={rec.series}
+                            color={status.stroke}
+                          />
+                        </div>
                       </td>
                       <td className="py-2 text-right">
                         <span className={`text-xs px-2 py-0.5 rounded ${status.cls}`}>
@@ -432,31 +531,43 @@ function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
                 <th className="py-2 text-left">Série</th>
                 <th className="py-2 text-right">Valor</th>
                 <th className="py-2 text-right">Var. a/a</th>
+                <th className="py-2 text-center">Trajetória</th>
                 <th className="py-2 text-right">Último</th>
               </tr>
             </thead>
             <tbody>
-              {bpstatEntries.map(([sid, rec]) => (
-                <tr
-                  key={sid}
-                  className="border-b border-slate-800/50 hover:bg-slate-800/30"
-                >
-                  <td className="py-2 text-slate-200">
-                    {BPSTAT_LABELS[sid] || (
-                      <span className="font-mono text-slate-400">{sid}</span>
-                    )}
-                  </td>
-                  <td className="py-2 text-right font-mono">
-                    {rec.value.toFixed(2)}
-                  </td>
-                  <td className="py-2 text-right font-mono text-slate-300">
-                    {formatPct(rec.yoy_pct)}
-                  </td>
-                  <td className="py-2 text-right text-slate-500 text-xs">
-                    {formatDateLong(rec.ts)}
-                  </td>
-                </tr>
-              ))}
+              {bpstatEntries.map(([sid, rec]) => {
+                const status = hpiYoyStatus(rec.yoy_pct);
+                return (
+                  <tr
+                    key={sid}
+                    className="border-b border-slate-800/50 hover:bg-slate-800/30"
+                  >
+                    <td className="py-2 text-slate-200">
+                      {BPSTAT_LABELS[sid] || (
+                        <span className="font-mono text-slate-400">{sid}</span>
+                      )}
+                    </td>
+                    <td className="py-2 text-right font-mono">
+                      {rec.value.toFixed(2)}
+                    </td>
+                    <td className="py-2 text-right font-mono text-slate-300">
+                      {formatPct(rec.yoy_pct)}
+                    </td>
+                    <td className="py-2">
+                      <div className="flex justify-center">
+                        <Sparkline
+                          data={rec.series}
+                          color={status.stroke}
+                        />
+                      </div>
+                    </td>
+                    <td className="py-2 text-right text-slate-500 text-xs">
+                      {formatDateLong(rec.ts)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
