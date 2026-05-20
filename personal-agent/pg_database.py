@@ -195,6 +195,66 @@ def get_indicator_series(series_id: str, days: int = 365) -> list[dict]:
         ]
 
 
+def get_latest_by_prefix(prefix: str) -> dict[str, dict]:
+    """Latest (ts, value) per series whose id starts with `prefix`.
+
+    Used by the macro-risk panel / alert context to pick up the
+    BIS_CREDIT_GAP_*, EUROSTAT_HPI_*, BPSTAT_* indicators without
+    hardcoding the country list — anything an ingester writes shows
+    up automatically. Sub-millisecond on the (series_id, ts DESC)
+    hypertable index thanks to DISTINCT ON.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT DISTINCT ON (series_id)
+                   series_id, ts, value
+               FROM quant_indicators
+               WHERE series_id LIKE %s
+               ORDER BY series_id, ts DESC""",
+            (prefix + "%",),
+        )
+        return {
+            r["series_id"]: {
+                "ts": r["ts"].isoformat(),
+                "value": float(r["value"]),
+            }
+            for r in cur.fetchall()
+        }
+
+
+def get_yoy_change(series_id: str) -> float | None:
+    """% change between the latest observation and the closest one ~12
+    months earlier. None when either value is missing or the past
+    value is zero.
+
+    One round-trip — a CTE picks the latest row, the outer SELECT
+    pulls both the latest value and the past value via scalar
+    subqueries against the same indexed hypertable.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """WITH latest AS (
+                 SELECT ts, value FROM quant_indicators
+                 WHERE series_id = %s
+                 ORDER BY ts DESC LIMIT 1
+               )
+               SELECT
+                 (SELECT value FROM latest) AS now,
+                 (SELECT value FROM quant_indicators i
+                  WHERE i.series_id = %s
+                    AND i.ts <= (SELECT ts FROM latest) - INTERVAL '12 months'
+                  ORDER BY i.ts DESC LIMIT 1) AS past""",
+            (series_id, series_id),
+        )
+        r = cur.fetchone()
+    if not r or r["now"] is None or r["past"] is None:
+        return None
+    past = float(r["past"])
+    if past == 0:
+        return None
+    return (float(r["now"]) - past) / past * 100.0
+
+
 def get_latest_features_by_target() -> dict[str, dict]:
     """Latest LPPL + GSADF feature value per ticker.
 
@@ -330,6 +390,38 @@ def get_watchlist() -> list[dict]:
     return out
 
 
+def _build_macro_risk() -> dict:
+    """Latest credit-to-GDP gap (BIS) + house price index (Eurostat,
+    BPstat). All three sources write into the same quant_indicators
+    hypertable with distinct id prefixes, so we just pull by prefix
+    and the country/series set is whatever the ingesters produced.
+
+    HPI series get a y-o-y % attached so the panel can show a
+    momentum gauge alongside the index level.
+    """
+    credit_raw = get_latest_by_prefix("BIS_CREDIT_GAP_")
+    hpi_raw = get_latest_by_prefix("EUROSTAT_HPI_")
+    bpstat_raw = get_latest_by_prefix("BPSTAT_")
+
+    credit_gap = {
+        sid.replace("BIS_CREDIT_GAP_", ""): rec
+        for sid, rec in credit_raw.items()
+    }
+    hpi = {
+        sid.replace("EUROSTAT_HPI_", ""): {
+            **rec, "yoy_pct": get_yoy_change(sid),
+        }
+        for sid, rec in hpi_raw.items()
+    }
+    bpstat = {
+        sid.replace("BPSTAT_", ""): {
+            **rec, "yoy_pct": get_yoy_change(sid),
+        }
+        for sid, rec in bpstat_raw.items()
+    }
+    return {"credit_gap": credit_gap, "hpi": hpi, "bpstat": bpstat}
+
+
 def get_quant_dashboard() -> dict:
     """Bundled snapshot used by the /api/quant/dashboard endpoint.
 
@@ -369,6 +461,9 @@ def get_quant_dashboard() -> dict:
         "latest": latest_vix,
         "status": _vix_status(latest_vix),
     }
+
+    # ---- Macro risk: credit gap (BIS) + house prices (Eurostat, BPstat) ----
+    out["macro_risk"] = _build_macro_risk()
 
     # ---- Watchlist (now includes LPPL + GSADF detector output) ----
     out["watchlist"] = get_watchlist()

@@ -5,13 +5,17 @@ written by quant_detectors, filters anything crossing severity
 thresholds, synthesises a short Portuguese narrative via Haiku, and
 posts to Telegram.
 
-Phase C (Knowledge Graph integration): before synthesising, each
-alerting ticker is enriched with a 1-2 hop walk of the approved
-knowledge graph (graph_relationships) so the narrative can talk about
-plausible dependency/contagion chains pulled from the news coverage —
-e.g. "SPY -> tech_sector -> nvidia -> tsmc". This is enrichment only:
-if the graph is sparse (expected until it accumulates a few weeks of
-financial-entity coverage) the narrative is exactly what it was before.
+Phase C (Knowledge Graph integration): each alerting ticker is
+enriched with a 1-2 hop walk of the approved knowledge graph so the
+narrative can talk about plausible contagion chains.
+
+Integration phase A (this revision): the narrative also gets a
+background macro-risk block — latest BIS credit-to-GDP gap for the US
+and Portugal, and the Eurostat HPI year-on-year for Portugal. These
+feed in as broad context (not ticker-specific) so the Interpretation
+section can reach for credit-bubble or housing-bubble framing when
+relevant. Empty / unreachable -> the block is omitted; the alert is
+the critical path, the macro context is enrichment.
 
 Triggering rules per ticker:
 
@@ -172,13 +176,7 @@ def _fetch_graph_context(ticker: str, graph: dict) -> list[str]:
 
     Returns human-readable edge strings (subject --predicate--> object),
     ranked by mention_count*confidence and capped so the prompt stays
-    tight. Empty list when the graph has nothing relevant — that's the
-    expected state until the financial ontology accumulates coverage,
-    and the narrative simply omits the graph section in that case.
-
-    `graph` is fetched once by the caller (get_graph_for_display) and
-    passed in, so this stays O(edges) with no extra DB round-trips per
-    ticker.
+    tight. Empty list when the graph has nothing relevant.
     """
     entities = graph.get("entities", [])
     rels = graph.get("relationships", [])
@@ -189,8 +187,6 @@ def _fetch_graph_context(ticker: str, graph: dict) -> list[str]:
     if not seeds:
         return []
 
-    # Hop 1: edges that touch a seed entity. Remember the far endpoint
-    # so hop 2 can extend the chain (SPY -> tech_sector -> nvidia).
     hop1: list[dict] = []
     frontier: set[str] = set()
     for r in rels:
@@ -200,8 +196,6 @@ def _fetch_graph_context(ticker: str, graph: dict) -> list[str]:
             hop1.append(r)
             frontier.add(o if s in seeds else s)
 
-    # Hop 2: edges off the frontier, one level further out, excluding
-    # edges already collected in hop 1.
     seen_ids = {r.get("id") for r in hop1}
     hop2 = [
         r for r in rels
@@ -237,11 +231,76 @@ def _load_approved_graph() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Integration phase A — macro-risk background context
+# ---------------------------------------------------------------------------
+
+def _fetch_macro_context() -> dict:
+    """Latest macro background for the alert narrative.
+
+    Returns a small dict with the BIS credit-to-GDP gap for US and PT
+    plus the Eurostat HPI year-on-year for PT. Any of them missing
+    just means that ingester hasn't run yet — the corresponding line
+    is simply omitted from the prompt.
+
+    Never raises: this is enrichment, the alert itself is the
+    critical path.
+    """
+    out: dict[str, float] = {}
+    try:
+        gaps = pg.get_latest_by_prefix("BIS_CREDIT_GAP_")
+        for country, key in (("BIS_CREDIT_GAP_US", "credit_gap_us"),
+                              ("BIS_CREDIT_GAP_PT", "credit_gap_pt")):
+            rec = gaps.get(country)
+            if rec is not None:
+                out[key] = float(rec["value"])
+    except Exception as e:
+        logger.warning(
+            "Macro context: BIS gap fetch failed (%s); continuing", e,
+        )
+
+    try:
+        yoy = pg.get_yoy_change("EUROSTAT_HPI_PT")
+        if yoy is not None:
+            out["hpi_pt_yoy_pct"] = yoy
+    except Exception as e:
+        logger.warning(
+            "Macro context: HPI y-o-y fetch failed (%s); continuing", e,
+        )
+
+    return out
+
+
+def _format_macro_instruction(macro: dict) -> str:
+    """Build the prompt fragment for whatever macro fields we have."""
+    parts: list[str] = []
+    if "credit_gap_us" in macro:
+        parts.append(f"BIS credit-to-GDP gap US = {macro['credit_gap_us']:+.1f}%")
+    if "credit_gap_pt" in macro:
+        parts.append(f"BIS credit-to-GDP gap PT = {macro['credit_gap_pt']:+.1f}%")
+    if "hpi_pt_yoy_pct" in macro:
+        parts.append(
+            f"Eurostat HPI Portugal (var. ano-a-ano) = {macro['hpi_pt_yoy_pct']:+.1f}%"
+        )
+    if not parts:
+        return ""
+    return (
+        "\n\nContexto macro de fundo (nao especifico aos tickers acima):\n- "
+        + "\n- ".join(parts)
+        + "\nConvencoes: BIS gap >2% = trigger CCyB Basel III, >10% = "
+          "maximo historico de bolha de credito. HPI y/y >10% sugere "
+          "froth imobiliario. Use na *INTERPRETACAO* SE for relevante "
+          "(ex.: alerta inclui financials/HYG e credit gap esta elevado, "
+          "ou cluster imobiliario). Nao force."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Narrative synthesis (Haiku) + Telegram send
 # ---------------------------------------------------------------------------
 
 async def _synthesise_narrative(alerts: list[dict]) -> str:
     graph = _load_approved_graph()
+    macro = _fetch_macro_context()
 
     enriched: list[dict] = []
     any_graph = False
@@ -272,13 +331,15 @@ async def _synthesise_narrative(alerts: list[dict]) -> str:
             "na cobertura, NAO relacoes causais comprovadas."
         )
 
+    macro_instruction = _format_macro_instruction(macro)
+
     prompt = f"""\
 Voce e o assistente quantitativo do Jose Carlos. Os tickers abaixo \
 cruzaram thresholds de detectores de bolha (LPPL) e/ou explosividade \
 estatistica (GSADF). Gere um alerta curto e direto em portugues do Brasil.
 
 Dados:
-{payload}{graph_instruction}
+{payload}{graph_instruction}{macro_instruction}
 
 Estrutura obrigatoria:
 
@@ -292,7 +353,9 @@ Para cada ticker:
 *INTERPRETACAO*
 [1-2 frases sobre o que isso significa no conjunto. Mencione \
 concentracao setorial se aplicavel. Se houver graph_context relevante, \
-trace a cadeia de contagio plausivel aqui.]
+trace a cadeia de contagio plausivel aqui. Se o contexto macro de \
+fundo for relevante (credit gap elevado, froth imobiliario), \
+incorpore SEM forcar.]
 
 *ACAO SUGERIDA*
 [1 sugestao conservadora: 'considere revisar', 'avalie stop', \
@@ -302,7 +365,7 @@ Lembrete obrigatorio no final: 'LPPL e GSADF detectam padroes \
 estatisticos, NAO predizem timing exato de correcao. Relacoes do grafo \
 sao mencoes na cobertura, nao causalidade comprovada.'
 
-Maximo 280 palavras.\
+Maximo 300 palavras.\
 """
 
     text = await generate_text(

@@ -10,7 +10,12 @@ import {
   ReferenceLine,
   Legend,
 } from "recharts";
-import { api, QuantDashboard, QuantSeriesPoint } from "../api";
+import {
+  api,
+  QuantDashboard,
+  QuantMacroRisk,
+  QuantSeriesPoint,
+} from "../api";
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -20,6 +25,14 @@ function formatDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+}
+
+function formatDateLong(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("pt-BR", {
+    day: "2-digit", month: "short", year: "numeric",
+  });
 }
 
 function formatPct(v: number | null | undefined): string {
@@ -106,6 +119,66 @@ const STATUS_LABEL: Record<string, string> = {
   panic: "pânico",
   unknown: "—",
   inverted: "invertida",
+};
+
+// ---------------------------------------------------------------------------
+// Macro-risk status (Phase A integration)
+// ---------------------------------------------------------------------------
+//
+// Credit-to-GDP gap thresholds follow the Basel III countercyclical
+// capital buffer (CCyB) convention: gap < 2 % → buffer 0 %, 2-10 →
+// buffer rises linearly, > 10 → buffer at maximum (2.5 %). Negative
+// gaps mean deleveraging, not a bubble signal.
+//
+// HPI y-o-y thresholds are heuristic — there is no canonical bubble
+// threshold — but 10 %+ is widely flagged as froth in real-estate
+// commentary, and < 5 % is normal trend growth.
+
+function creditGapStatus(v: number): { label: string; cls: string } {
+  if (v < 0) {
+    return {
+      label: "deleveraging",
+      cls: "bg-blue-500/20 text-blue-400",
+    };
+  }
+  if (v < 2) {
+    return {
+      label: "abaixo trigger",
+      cls: "bg-emerald-500/20 text-emerald-400",
+    };
+  }
+  if (v < 10) {
+    return {
+      label: "elevado (>trigger CCyB)",
+      cls: "bg-amber-500/20 text-amber-400",
+    };
+  }
+  return {
+    label: "máximo (>10)",
+    cls: "bg-red-500/20 text-red-400",
+  };
+}
+
+function hpiYoyStatus(v: number | null): { label: string; cls: string } {
+  if (v === null) return { label: "—", cls: "bg-slate-500/20 text-slate-400" };
+  if (v < 0) return { label: "queda", cls: "bg-blue-500/20 text-blue-400" };
+  if (v < 5) return { label: "normal", cls: "bg-emerald-500/20 text-emerald-400" };
+  if (v < 10) return { label: "elevado", cls: "bg-amber-500/20 text-amber-400" };
+  return {
+    label: "potencial bolha",
+    cls: "bg-red-500/20 text-red-400",
+  };
+}
+
+// Friendly labels for the default BPstat series in domain 39.
+// 12559646/47 are flagged best-guess in the ingester; if the cron
+// log shows a different label, edit here. Unknown ids render as the
+// raw numeric id.
+const BPSTAT_LABELS: Record<string, string> = {
+  "12559645": "Habitação PT — Total (índice)",
+  "12559646": "Habitação PT — sibling (novo/existente?)",
+  "12559647": "Habitação PT — sibling (novo/existente?)",
+  "5739035": "Habitação PT — Total (var. ano-a-ano)",
 };
 
 // ---------------------------------------------------------------------------
@@ -227,6 +300,172 @@ function EmptyChart() {
 }
 
 // ---------------------------------------------------------------------------
+// Macro-risk panel (Phase A integration)
+// ---------------------------------------------------------------------------
+
+function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
+  const creditEntries = Object.entries(data.credit_gap).sort();
+  const hpiEntries = Object.entries(data.hpi).sort();
+  const bpstatEntries = Object.entries(data.bpstat).sort();
+
+  const isEmpty =
+    creditEntries.length === 0 &&
+    hpiEntries.length === 0 &&
+    bpstatEntries.length === 0;
+
+  if (isEmpty) {
+    return (
+      <Panel
+        title="Risco macro / imobiliário"
+        subtitle="BIS credit-to-GDP gap + Eurostat HPI + BPstat. Atualização semanal (segundas, 05:00–06:00 UTC)."
+      >
+        <div className="h-32 flex items-center justify-center text-sm text-slate-500">
+          Sem dados ainda — aguarde o primeiro run dos crons quant-bis /
+          quant-eurostat / quant-bpstat.
+        </div>
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel
+      title="Risco macro / imobiliário"
+      subtitle="BIS credit-to-GDP gap (>2% = trigger CCyB Basel III, >10% = máximo histórico) + Eurostat HPI / BPstat (índice 2015=100 + variação a/a)."
+    >
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {creditEntries.length > 0 && (
+          <div>
+            <h3 className="text-xs uppercase tracking-wider text-slate-400 mb-2">
+              Credit-to-GDP gap (BIS)
+            </h3>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
+                  <th className="py-2 text-left">País</th>
+                  <th className="py-2 text-right">Gap %</th>
+                  <th className="py-2 text-right">Status</th>
+                  <th className="py-2 text-right">Último</th>
+                </tr>
+              </thead>
+              <tbody>
+                {creditEntries.map(([country, rec]) => {
+                  const status = creditGapStatus(rec.value);
+                  return (
+                    <tr
+                      key={country}
+                      className="border-b border-slate-800/50 hover:bg-slate-800/30"
+                    >
+                      <td className="py-2 font-mono text-slate-200">
+                        {country}
+                      </td>
+                      <td className="py-2 text-right font-mono">
+                        {rec.value > 0 ? "+" : ""}
+                        {rec.value.toFixed(2)}%
+                      </td>
+                      <td className="py-2 text-right">
+                        <span className={`text-xs px-2 py-0.5 rounded ${status.cls}`}>
+                          {status.label}
+                        </span>
+                      </td>
+                      <td className="py-2 text-right text-slate-500 text-xs">
+                        {formatDate(rec.ts)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {hpiEntries.length > 0 && (
+          <div>
+            <h3 className="text-xs uppercase tracking-wider text-slate-400 mb-2">
+              House Price Index (Eurostat, 2015=100)
+            </h3>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
+                  <th className="py-2 text-left">Geo</th>
+                  <th className="py-2 text-right">Nível</th>
+                  <th className="py-2 text-right">Var. a/a</th>
+                  <th className="py-2 text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hpiEntries.map(([geo, rec]) => {
+                  const status = hpiYoyStatus(rec.yoy_pct);
+                  return (
+                    <tr
+                      key={geo}
+                      className="border-b border-slate-800/50 hover:bg-slate-800/30"
+                    >
+                      <td className="py-2 font-mono text-slate-200">{geo}</td>
+                      <td className="py-2 text-right font-mono">
+                        {rec.value.toFixed(1)}
+                      </td>
+                      <td className="py-2 text-right font-mono">
+                        {formatPct(rec.yoy_pct)}
+                      </td>
+                      <td className="py-2 text-right">
+                        <span className={`text-xs px-2 py-0.5 rounded ${status.cls}`}>
+                          {status.label}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {bpstatEntries.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-xs uppercase tracking-wider text-slate-400 mb-2">
+            BPstat — imobiliário PT granular (Banco de Portugal)
+          </h3>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
+                <th className="py-2 text-left">Série</th>
+                <th className="py-2 text-right">Valor</th>
+                <th className="py-2 text-right">Var. a/a</th>
+                <th className="py-2 text-right">Último</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bpstatEntries.map(([sid, rec]) => (
+                <tr
+                  key={sid}
+                  className="border-b border-slate-800/50 hover:bg-slate-800/30"
+                >
+                  <td className="py-2 text-slate-200">
+                    {BPSTAT_LABELS[sid] || (
+                      <span className="font-mono text-slate-400">{sid}</span>
+                    )}
+                  </td>
+                  <td className="py-2 text-right font-mono">
+                    {rec.value.toFixed(2)}
+                  </td>
+                  <td className="py-2 text-right font-mono text-slate-300">
+                    {formatPct(rec.yoy_pct)}
+                  </td>
+                  <td className="py-2 text-right text-slate-500 text-xs">
+                    {formatDateLong(rec.ts)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -324,6 +563,8 @@ export default function Quant() {
           >
             <VixChart vix={data.vix} />
           </Panel>
+
+          {data.macro_risk && <MacroRiskPanel data={data.macro_risk} />}
 
           <Panel
             title="Watchlist + bubble detectors"
