@@ -296,6 +296,19 @@ export type QuantWatchlistRow = {
   gsadf_explosive: boolean;
 };
 
+// Macro-risk panel — Onda 12 integration Phase A. Each field maps to
+// one of the three new ingesters (BIS credit-to-GDP gap, Eurostat HPI,
+// BPstat) writing into quant_indicators. Empty until the corresponding
+// weekly cron has run at least once.
+export type QuantLatestPoint = { ts: string; value: number };
+export type QuantHpiPoint = QuantLatestPoint & { yoy_pct: number | null };
+
+export type QuantMacroRisk = {
+  credit_gap: Record<string, QuantLatestPoint>;
+  hpi: Record<string, QuantHpiPoint>;
+  bpstat: Record<string, QuantHpiPoint>;
+};
+
 export type QuantDashboard = {
   yield_curve: {
     T10Y3M: QuantSeriesPoint[];
@@ -314,6 +327,7 @@ export type QuantDashboard = {
     latest: number | null;
     status: "calm" | "nervous" | "fear" | "panic" | "unknown";
   };
+  macro_risk: QuantMacroRisk;
   watchlist: QuantWatchlistRow[];
   updated_at: string;
 };
