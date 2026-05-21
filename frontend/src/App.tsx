@@ -11,6 +11,7 @@ import SupplyChain from "./pages/SupplyChain";
 import GraphReview from "./pages/GraphReview";
 import Backtesting from "./pages/Backtesting";
 import Quant from "./pages/Quant";
+import BubbleEngine from "./pages/BubbleEngine";
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="/graph" element={<GraphReview />} />
         <Route path="/backtesting" element={<Backtesting />} />
         <Route path="/quant" element={<Quant />} />
+        <Route path="/bubble" element={<BubbleEngine />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>
