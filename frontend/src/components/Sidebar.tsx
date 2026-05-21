@@ -11,6 +11,7 @@ const items = [
   { to: "/graph", label: "Knowledge Graph", icon: "◇" },
   { to: "/backtesting", label: "Backtesting", icon: "↻" },
   { to: "/quant", label: "Quant", icon: "◭" },
+  { to: "/bubble", label: "Bubble Engine", icon: "◎" },
   { to: "/settings", label: "Settings", icon: "⚙" },
 ];
 

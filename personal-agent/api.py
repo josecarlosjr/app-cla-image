@@ -781,6 +781,21 @@ async def get_quant_health():
 
 
 # ---------------------------------------------------------------------------
+# Bubble Detection Engine (Onda 13) — Step 1: scoring self-test
+# ---------------------------------------------------------------------------
+# Pure-function sanity check of the bubble-scoring math (Signal contract
+# + confidence-weighted composite) against synthetic scenarios. No DB,
+# no LLM, deterministic — safe to call anytime. Surfaced on the Bubble
+# Engine page so the result can be inspected (and copied back for
+# analysis) without CLI access.
+
+@app.get("/api/bubble/selftest")
+async def bubble_selftest():
+    from bubble_scoring import run_selftest
+    return run_selftest()
+
+
+# ---------------------------------------------------------------------------
 # Entry point for standalone testing
 # ---------------------------------------------------------------------------
 
