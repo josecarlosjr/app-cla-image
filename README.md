@@ -100,6 +100,7 @@ Overlap de conjuntos (Jaccard-like) entre entidades extraídas pelo Haiku.
 
 O que NÃO está sendo usado:
 
+## TO DO
 
 **Redes neurais treinadas/fine-tuned**	Nenhuma.
 
