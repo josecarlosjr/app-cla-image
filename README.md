@@ -108,7 +108,7 @@ O que NÃO está sendo usado:
 
 **Deep learning próprio**	Não Vale,  DL precisa de dezenas de milhares de exemplos que o PIA não tem. As features Voyage já capturam semântica; um MLP em cima não justifica a complexidade.
 
-**Grafos de conhecimento (knowledge graphs)**	Nenhum (o mapa é visual, não um grafo real).
+**Grafos de conhecimento (knowledge graphs)**	Já existe, próximo passo viável: algoritmos de grafo sobre o que já existe (o mapa é visual, não um grafo real).
 
 **Sentiment analysis dedicado**	Nenhum (o LLM faz implicitamente).
 
