@@ -1,42 +1,50 @@
-"""Bubble Detection Engine — scoring core (Onda 13, Step 1).
+"""Bubble Detection Engine — scoring core (Onda 13, Step 1 + 1.5).
 
 This module is intentionally PURE: data goes in, a Signal goes out, no
 DB / network / LLM. That is what makes it testable without a running
 cluster — the orchestrator that fetches live data lives elsewhere (a
 later step) and is a thin shell over these functions.
 
-The design decision that prevents the worst class of error in a
-composite scorer (a confident number built on missing data) is the
-Signal contract:
+The Signal contract:
 
     Signal(score 0..1, confidence 0..1, detail)
 
   - score      = bubble intensity for this single dimension, normalised.
   - confidence = data coverage / reliability (0 = no data, 1 = full).
 
-The composite is a confidence-weighted average:
+Two distinct numbers come out of the composite, and Step 1.5 exists to
+separate them properly because they answer different questions:
 
-    composite = sum(w_i * score_i * conf_i) / sum(w_i * conf_i)
+  composite             = HOW bubbly, given the evidence we have.
+      = sum(w*score*conf) / sum(w*conf)
+    A zero-confidence signal drops out (no dilution); one usable signal
+    scores on its own merit.
 
-so a signal with conf=0 drops out entirely instead of dragging the
-score toward zero, and a sector with only one usable signal scores on
-that signal alone (not diluted). `coverage` reports how many of the
-signals actually had data, so the consumer never mistakes a
-thin-evidence score for a strong one.
+  aggregate_confidence  = HOW MUCH evidence is behind that number.
+      = sum(w*conf) / sum(w)            (over all signals present)
+    Absent signals keep their weight in the denominator, so thin
+    coverage drags this down even when `composite` looks strong.
 
-Step 1 wires only the three dimensions that already exist as data from
-Onda 12 / earlier waves:
+Why both: confidence-weighting alone solves "missing data must not drag
+the score down" but NOT "thin evidence must not look as strong as
+corroborated evidence". A lone weak-confidence signal at score 1.0
+produces composite=1.0 — only `aggregate_confidence` (and `coverage`)
+reveal it's flimsy. The consumption rule `should_flag()` therefore
+requires composite AND aggregate_confidence to clear thresholds, so a
+single signal can never trigger a bubble call on its own (the
+Sornette-style discipline: corroboration required).
+
+Step 1 wires the three dimensions that already exist as data:
   - momentum         (LPPL bubble probability, quant_features)
   - temporal         (acceleration ratio, Onda 5a temporal.py)
   - graph_fragility  (KG dependency-chain size, Onda 10 + Phase C)
 
-valuation / credit / sentiment / structure come in later steps; their
-weights are listed but currently unused, and the composite normalises
-over whatever is present.
+valuation / credit / sentiment / structure come later; their weights
+are declared (shape visible) but score nothing until their steps land.
 
-Weights are PLACEHOLDER — there is no labelled bubble dataset to fit
-them, so they're hand-set and must be treated as a starting point, not
-a calibrated model.
+Weights are PLACEHOLDER — no labelled bubble dataset exists to fit them,
+so they're hand-set. Treat as a starting point, not a calibrated model;
+calibration needs the backtest against historical bubbles.
 """
 
 from __future__ import annotations
@@ -136,7 +144,7 @@ def graph_fragility_signal(chain_edges: list | None) -> Signal:
 
 
 # ---------------------------------------------------------------------------
-# Composite
+# Composite + flag rule
 # ---------------------------------------------------------------------------
 
 # Placeholder weights. The three live signals sum to 1.0; the rest are
@@ -153,35 +161,75 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "structure": 0.0,
 }
 
+# Consumption rule defaults. A bubble is only "flagged" when the score
+# is strong AND there's enough corroborating evidence behind it.
+# min_confidence = 0.50 is deliberately above what any single signal
+# can contribute on its own (e.g. momentum alone at full confidence
+# only reaches aggregate_confidence ~0.40), so one signal never flags.
+FLAG_MIN_COMPOSITE = 0.70
+FLAG_MIN_CONFIDENCE = 0.50
+
+
+def should_flag(
+    composite: float,
+    aggregate_confidence: float,
+    min_composite: float = FLAG_MIN_COMPOSITE,
+    min_confidence: float = FLAG_MIN_CONFIDENCE,
+) -> bool:
+    """Single source of truth for "is this a bubble call?".
+
+    Requires BOTH a strong composite and enough aggregate confidence,
+    so a lone weak-confidence signal at score 1.0 (composite 1.0 but
+    aggregate_confidence ~0.12) does NOT trigger.
+    """
+    return composite >= min_composite and aggregate_confidence >= min_confidence
+
 
 def composite_score(
     signals: list[Signal], weights: dict[str, float] | None = None,
 ) -> dict:
-    """Confidence-weighted blend of signals.
+    """Confidence-weighted blend + an explicit evidence gauge.
 
-    composite = sum(w*score*conf) / sum(w*conf). A zero-confidence
-    signal contributes nothing to numerator or denominator, so missing
-    data neither inflates nor deflates the score. `coverage` is the
-    fraction of signals that had any data.
+      composite             = sum(w*score*conf) / sum(w*conf)
+      aggregate_confidence  = sum(w*conf) / sum(w)
+      coverage              = fraction of signals with any data
+
+    composite says how bubbly; aggregate_confidence says how much
+    evidence is behind it (thin coverage pulls it down even when
+    composite looks strong). See module docstring for why both are
+    needed.
     """
     weights = weights or DEFAULT_WEIGHTS
     num = 0.0
-    den = 0.0
+    den = 0.0           # sum(w*conf)
+    weight_present = 0.0  # sum(w) over signals actually passed in
     used = 0
     for s in signals:
         w = weights.get(s.name, 0.0)
         num += w * s.score * s.confidence
         den += w * s.confidence
+        weight_present += w
         if s.confidence > 0:
             used += 1
     composite = (num / den) if den > 0 else 0.0
+    aggregate_confidence = (den / weight_present) if weight_present > 0 else 0.0
     coverage = (used / len(signals)) if signals else 0.0
     return {
         "composite": round(composite, 4),
+        "aggregate_confidence": round(aggregate_confidence, 4),
         "coverage": round(coverage, 4),
         "n_signals_used": used,
         "n_signals_total": len(signals),
-        "components": [asdict(s) for s in signals],
+        "flagged": should_flag(composite, aggregate_confidence),
+        "components": [
+            {
+                "name": s.name,
+                "score": round(s.score, 4),
+                "confidence": round(s.confidence, 4),
+                "detail": s.detail,
+            }
+            for s in signals
+        ],
     }
 
 
@@ -192,11 +240,12 @@ def composite_score(
 def run_selftest() -> dict:
     """Run the scoring math against hand-built scenarios.
 
-    Pure and deterministic (same output every call) so two runs can be
-    diffed. Exercises the behaviours that matter for correctness:
-    a clear bubble scores high, a calm market scores low, fully-missing
-    data abstains (composite 0, doesn't crash), and partial data scores
-    on the present signal alone (not diluted by absent ones).
+    Pure and deterministic. Exercises the behaviours that matter:
+    a clear bubble flags; a calm market doesn't; fully-missing data
+    abstains (composite 0, no crash); partial data isn't diluted but
+    also does NOT flag on a single signal; conflicting signals dampen;
+    and a lone weak-confidence signal at max score is caught by the
+    flag rule despite composite 1.0.
     """
     cases: list[dict] = []
 
@@ -213,64 +262,103 @@ def run_selftest() -> dict:
     # 1. Clear bubble: strong LPPL, strongly accelerating, fragile graph.
     add(
         "clear_bubble",
-        "composite alto (>0.6), cobertura 3/3",
+        "composite alto (>0.6), cobertura 3/3, DISPARA",
         [
             momentum_signal(0.91, 252),
             temporal_signal(3.2),
             graph_fragility_signal(["a->b", "b->c", "c->d",
                                     "d->e", "e->f", "f->g"]),
         ],
-        lambda c: c["composite"] > 0.6 and c["coverage"] == 1.0,
+        lambda c: c["composite"] > 0.6 and c["coverage"] == 1.0
+        and c["flagged"] is True,
     )
 
     # 2. Calm market: low LPPL, no acceleration, no graph chains.
     add(
         "calm_market",
-        "composite baixo (<0.25)",
+        "composite baixo (<0.25), NAO dispara",
         [
             momentum_signal(0.15, 252),
             temporal_signal(1.0),
             graph_fragility_signal([]),
         ],
-        lambda c: c["composite"] < 0.25,
+        lambda c: c["composite"] < 0.25 and c["flagged"] is False,
     )
 
-    # 3. Sparse data: LPPL too few points, no temporal, no graph.
-    #    Must abstain (composite 0, coverage 0) and not raise.
+    # 3. Sparse data: must abstain (composite 0, coverage 0) and not raise.
     add(
         "sparse_data",
-        "cobertura 0/3, composite 0, sem crash",
+        "cobertura 0/3, composite 0, conf 0, NAO dispara, sem crash",
         [
             momentum_signal(None, 12),
             temporal_signal(None),
             graph_fragility_signal([]),
         ],
-        lambda c: c["coverage"] == 0.0 and c["composite"] == 0.0,
+        lambda c: c["coverage"] == 0.0 and c["composite"] == 0.0
+        and c["aggregate_confidence"] == 0.0 and c["flagged"] is False,
     )
 
-    # 4. Partial: only momentum has data. Composite must equal the
-    #    momentum score (0.80), NOT be dragged down by the two absent
-    #    signals — the core anti-sparsity property.
+    # 4. Partial: only momentum has data. Composite = momentum score
+    #    (not diluted) BUT aggregate_confidence ~0.40 < 0.50, so it must
+    #    NOT flag — one signal isn't a bubble call.
     add(
         "partial_momentum_only",
-        "composite ~= score do momentum (0.80), 1 sinal usado",
+        "composite ~=0.80 (nao diluido) mas conf ~0.40, NAO dispara",
         [
             momentum_signal(0.80, 252),
             temporal_signal(None),
             graph_fragility_signal([]),
         ],
         lambda c: abs(c["composite"] - 0.80) < 0.05
-        and c["n_signals_used"] == 1,
+        and c["n_signals_used"] == 1
+        and c["aggregate_confidence"] < 0.5
+        and c["flagged"] is False,
+    )
+
+    # 5. Conflicting: strong LPPL but flat temporal (price fit a
+    #    log-periodic shape yet isn't actually accelerating — a
+    #    plausible false-LPPL). The flat temporal must dampen the
+    #    composite well below the momentum score, and it must not flag.
+    add(
+        "conflicting_signals",
+        "momentum alto + temporal flat -> composite amortecido (0.4-0.75), NAO dispara",
+        [
+            momentum_signal(0.90, 252),
+            temporal_signal(1.0),
+            graph_fragility_signal([]),
+        ],
+        lambda c: 0.4 < c["composite"] < 0.75 and c["flagged"] is False,
+    )
+
+    # 6. Lone weak signal at max: only graph_fragility, score 1.0 but
+    #    confidence 0.4. composite renormalises to 1.0 — the trap. The
+    #    guard: aggregate_confidence ~0.12 keeps `flagged` False.
+    add(
+        "lone_weak_signal_at_max",
+        "composite 1.0 (renormalizado) mas conf ~0.12 -> NAO dispara (a guarda)",
+        [
+            momentum_signal(None, 0),
+            temporal_signal(None),
+            graph_fragility_signal(["a->b", "b->c", "c->d",
+                                    "d->e", "e->f", "f->g"]),
+        ],
+        lambda c: c["composite"] > 0.9
+        and c["aggregate_confidence"] < 0.2
+        and c["flagged"] is False,
     )
 
     n_pass = sum(1 for c in cases if c["pass"])
     return {
         "suite": "bubble_scoring_selftest",
-        "step": "Onda 13 / Step 1",
+        "step": "Onda 13 / Step 1.5",
         "passed": n_pass,
         "total": len(cases),
         "all_pass": n_pass == len(cases),
         "weights": DEFAULT_WEIGHTS,
+        "flag_rule": {
+            "min_composite": FLAG_MIN_COMPOSITE,
+            "min_confidence": FLAG_MIN_CONFIDENCE,
+        },
         "cases": cases,
     }
 
