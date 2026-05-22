@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { api } from "../api";
 
-// Local types — the self-test endpoint is Onda 13 Step 1 only, kept out
-// of the shared api.ts until the engine surface stabilises.
+// Local types — the self-test endpoint is Onda 13 only, kept out of
+// the shared api.ts until the engine surface stabilises.
 type BubbleSignal = {
   name: string;
   score: number;
@@ -16,9 +16,11 @@ type CaseResult = {
   pass: boolean;
   result: {
     composite: number;
+    aggregate_confidence: number;
     coverage: number;
     n_signals_used: number;
     n_signals_total: number;
+    flagged: boolean;
     components: BubbleSignal[];
   };
 };
@@ -30,6 +32,7 @@ type SelfTestReport = {
   total: number;
   all_pass: boolean;
   weights: Record<string, number>;
+  flag_rule: { min_composite: number; min_confidence: number };
   cases: CaseResult[];
 };
 
@@ -72,9 +75,9 @@ export default function BubbleEngine() {
         <div>
           <h1 className="text-3xl font-bold">Bubble Engine — Self-test</h1>
           <p className="text-slate-400 mt-1">
-            Onda 13 · Passo 1. Valida a matemática de scoring (contrato
-            Signal + composto ponderado-por-confiança) com cenários
-            sintéticos. Sem DB, sem LLM — determinístico.
+            Onda 13 · Passo 1.5. Valida a matemática de scoring (contrato
+            Signal + composto + aggregate_confidence + regra de disparo)
+            com cenários sintéticos. Sem DB, sem LLM — determinístico.
           </p>
         </div>
         <button
@@ -125,27 +128,43 @@ export default function BubbleEngine() {
             )}
           </div>
 
-          <div className="bg-slate-900 rounded-lg p-5 border border-slate-800">
-            <h2 className="font-bold text-slate-100">
-              Pesos atuais
-            </h2>
-            <p className="text-xs text-slate-500 mt-1 mb-3">
-              PLACEHOLDER — sem dataset rotulado de bolha, pesos são
-              hand-set. Sinais com peso 0 ainda não existem (Step 2+).
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {Object.entries(report.weights).map(([k, v]) => (
-                <span
-                  key={k}
-                  className={`text-xs px-2 py-1 rounded font-mono ${
-                    v > 0
-                      ? "bg-slate-800 text-slate-200"
-                      : "bg-slate-800/40 text-slate-500"
-                  }`}
-                >
-                  {k}: {v.toFixed(2)}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="bg-slate-900 rounded-lg p-5 border border-slate-800">
+              <h2 className="font-bold text-slate-100">Pesos atuais</h2>
+              <p className="text-xs text-slate-500 mt-1 mb-3">
+                PLACEHOLDER — sem dataset rotulado, pesos hand-set. Sinais
+                com peso 0 ainda não existem (Step 2+).
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(report.weights).map(([k, v]) => (
+                  <span
+                    key={k}
+                    className={`text-xs px-2 py-1 rounded font-mono ${
+                      v > 0
+                        ? "bg-slate-800 text-slate-200"
+                        : "bg-slate-800/40 text-slate-500"
+                    }`}
+                  >
+                    {k}: {v.toFixed(2)}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-slate-900 rounded-lg p-5 border border-slate-800">
+              <h2 className="font-bold text-slate-100">Regra de disparo</h2>
+              <p className="text-xs text-slate-500 mt-1 mb-3">
+                Dispara alerta só quando composite E aggregate_confidence
+                cruzam os limiares — um sinal sozinho nunca dispara.
+              </p>
+              <div className="flex flex-wrap gap-2 text-xs font-mono">
+                <span className="bg-slate-800 text-slate-200 px-2 py-1 rounded">
+                  composite ≥ {report.flag_rule.min_composite.toFixed(2)}
                 </span>
-              ))}
+                <span className="bg-slate-800 text-slate-200 px-2 py-1 rounded">
+                  confiança ≥ {report.flag_rule.min_confidence.toFixed(2)}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -154,7 +173,7 @@ export default function BubbleEngine() {
               key={c.name}
               className="bg-slate-900 rounded-lg p-5 border border-slate-800"
             >
-              <div className="flex items-center gap-3 mb-2">
+              <div className="flex items-center gap-3 mb-2 flex-wrap">
                 <span className="font-mono font-bold text-slate-100">
                   {c.name}
                 </span>
@@ -167,15 +186,30 @@ export default function BubbleEngine() {
                 >
                   {c.pass ? "PASS" : "FAIL"}
                 </span>
+                <span
+                  className={`text-xs px-2 py-0.5 rounded ${
+                    c.result.flagged
+                      ? "bg-red-500/20 text-red-400"
+                      : "bg-slate-700/40 text-slate-400"
+                  }`}
+                >
+                  {c.result.flagged ? "⚠ dispararia" : "não dispara"}
+                </span>
               </div>
               <p className="text-xs text-slate-500 mb-3">
                 esperado: {c.expectation}
               </p>
-              <div className="flex gap-6 mb-3 text-sm">
+              <div className="flex gap-6 mb-3 text-sm flex-wrap">
                 <div>
                   <span className="text-slate-400">composite </span>
                   <span className="font-mono font-bold">
                     {c.result.composite.toFixed(3)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400">confiança </span>
+                  <span className="font-mono font-bold">
+                    {c.result.aggregate_confidence.toFixed(3)}
                   </span>
                 </div>
                 <div>
