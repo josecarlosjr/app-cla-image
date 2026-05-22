@@ -106,7 +106,7 @@ O que NÃO está sendo usado:
 
 **Classificação supervisionada (SVM, Random Forest)**	Nenhuma.
 
-**Deep learning próprio**	Nenhum.
+**Deep learning próprio**	Não Vale,  DL precisa de dezenas de milhares de exemplos que o PIA não tem. As features Voyage já capturam semântica; um MLP em cima não justifica a complexidade.
 
 **Grafos de conhecimento (knowledge graphs)**	Nenhum (o mapa é visual, não um grafo real).
 
