@@ -102,7 +102,7 @@ O que NÃO está sendo usado:
 
 ## TO DO
 
-**Redes neurais treinadas/fine-tuned**	Nenhuma.
+**Redes neurais treinadas/fine-tuned**	Não Vale, sem GPU, sem volume de dados rotulados, e o fine-tune não supera prompting estruturado no seu regime de dados. Custo de infra/MLOps desproporcional.
 
 **Classificação supervisionada (SVM, Random Forest)**	Nenhuma.
 
