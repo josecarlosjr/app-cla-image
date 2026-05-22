@@ -114,7 +114,7 @@ O que NÃO está sendo usado:
 
 **Time series forecasting (ARIMA, Prophet)**	Nenhum.
 
-**Reinforcement learning**	Nenhum.
+**Reinforcement learning**	Não Vale,  não há ambiente nem sinal de recompensa denso; feedback é esparso e single-user. Conceitualmente inadequado ao problema (não é controle sequencial).
 
 **Data mining formal (Apriori, FP-Growth)**	Nenhum.
 
