@@ -795,6 +795,26 @@ async def bubble_selftest():
     return run_selftest()
 
 
+# Step 2 — the orchestrator: live per-ticker bubble scores. Assembles
+# momentum (price/LPPL), temporal (news acceleration) and graph_fragility
+# (knowledge graph) per watchlist ticker and runs the confidence-weighted
+# composite. Scores ONLY — no Telegram alerts; automatic alerting stays
+# gated behind the backtest (docs/backtest-plan.md §8). Needs Postgres
+# (watchlist/features), so it 503s where the pg driver isn't installed,
+# matching /api/quant/*.
+
+@app.get("/api/bubble/scores")
+async def bubble_scores():
+    try:
+        from bubble_orchestrator import gather_and_score
+        return gather_and_score()
+    except ImportError:
+        raise HTTPException(503, "Postgres driver not installed in this image")
+    except Exception as e:
+        logger.error("Bubble scores failed: %s", e)
+        raise HTTPException(500, f"Bubble scores failed: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Entry point for standalone testing
 # ---------------------------------------------------------------------------

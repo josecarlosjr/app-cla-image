@@ -426,6 +426,28 @@ def get_watchlist() -> list[dict]:
     return out
 
 
+def get_bar_counts(tickers: list[str]) -> dict[str, int]:
+    """Number of stored daily bars per ticker, one grouped query.
+
+    The LPPL/GSADF detectors fit on the most-recent WINDOW_DAYS (252)
+    closes, so the bubble orchestrator caps this count at that window to
+    recover the point-count behind a fit — which is what sets the
+    momentum signal's confidence. Tickers with no bars are absent from
+    the result (callers treat missing as 0).
+    """
+    if not tickers:
+        return {}
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT ticker, count(*) AS n
+               FROM quant_bars
+               WHERE ticker = ANY(%s)
+               GROUP BY ticker""",
+            (tickers,),
+        )
+        return {r["ticker"]: int(r["n"]) for r in cur.fetchall()}
+
+
 def _build_macro_risk() -> dict:
     """Latest + ~7y series for credit gap (BIS), HPI (Eurostat),
     BPstat. All three sources write into quant_indicators with

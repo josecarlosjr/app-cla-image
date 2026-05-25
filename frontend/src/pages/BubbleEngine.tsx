@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { api } from "../api";
 
-// Local types — the self-test endpoint is Onda 13 only, kept out of
-// the shared api.ts until the engine surface stabilises.
+// Local types — the Bubble Engine surface (Onda 13) is kept out of the
+// shared api.ts until it stabilises.
 type BubbleSignal = {
   name: string;
   score: number;
@@ -36,12 +36,53 @@ type SelfTestReport = {
   cases: CaseResult[];
 };
 
+// --- Step 2 orchestrator: live per-ticker scores -----------------------
+type ScoreRow = {
+  ticker: string;
+  composite: number;
+  aggregate_confidence: number;
+  coverage: number;
+  n_signals_used: number;
+  n_signals_total: number;
+  flagged: boolean;
+  components: BubbleSignal[];
+  context?: {
+    close: number | null;
+    change_pct_30d: number | null;
+    gsadf_explosive: boolean;
+  };
+};
+
+type ScoresReport = {
+  engine: string;
+  step: string;
+  scope: string;
+  alerting_enabled: boolean;
+  alerting_note: string;
+  weights: Record<string, number>;
+  flag_rule: { min_composite: number; min_confidence: number };
+  n_tickers: number;
+  n_flagged: number;
+  generated_at: string;
+  tickers: ScoreRow[];
+};
+
+const SIGNAL_ORDER = ["momentum", "temporal", "graph_fragility"];
+
+function signal(row: ScoreRow, name: string): BubbleSignal | undefined {
+  return row.components.find((c) => c.name === name);
+}
+
 export default function BubbleEngine() {
   const [report, setReport] = useState<SelfTestReport | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [ranAt, setRanAt] = useState<string>("");
   const [copied, setCopied] = useState(false);
+
+  const [scores, setScores] = useState<ScoresReport | null>(null);
+  const [scoresError, setScoresError] = useState("");
+  const [scoresLoading, setScoresLoading] = useState(false);
 
   async function run() {
     setLoading(true);
@@ -58,6 +99,21 @@ export default function BubbleEngine() {
     }
   }
 
+  async function runScores() {
+    setScoresLoading(true);
+    setScoresError("");
+    try {
+      const resp = await api.get<ScoresReport>("/bubble/scores");
+      setScores(resp.data);
+    } catch (e: any) {
+      setScoresError(
+        e?.response?.data?.detail || e?.message || "erro desconhecido",
+      );
+    } finally {
+      setScoresLoading(false);
+    }
+  }
+
   async function copyJson() {
     if (!report) return;
     try {
@@ -71,39 +127,183 @@ export default function BubbleEngine() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-3xl font-bold">Bubble Engine — Self-test</h1>
-          <p className="text-slate-400 mt-1">
-            Onda 13 · Passo 1.5. Valida a matemática de scoring (contrato
-            Signal + composto + aggregate_confidence + regra de disparo)
-            com cenários sintéticos. Sem DB, sem LLM — determinístico.
+          <h1 className="text-3xl font-bold">Bubble Engine</h1>
+          <p className="text-slate-400 mt-1 max-w-3xl">
+            Onda 13. <b>Scores ao vivo</b> combina, por ticker, momentum
+            (preço/LPPL), temporal (aceleração de notícias) e fragilidade de
+            grafo (knowledge graph) no composto ponderado por confiança. O{" "}
+            <b>self-test</b> valida a matemática com cenários sintéticos.
           </p>
         </div>
-        <button
-          onClick={run}
-          disabled={loading}
-          className="px-4 py-2 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 rounded-lg text-sm font-medium transition"
-        >
-          {loading ? "Rodando..." : "Rodar self-test"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={runScores}
+            disabled={scoresLoading}
+            className="px-4 py-2 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 rounded-lg text-sm font-medium transition"
+          >
+            {scoresLoading ? "Calculando..." : "Scores ao vivo"}
+          </button>
+          <button
+            onClick={run}
+            disabled={loading}
+            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 rounded-lg text-sm font-medium transition"
+          >
+            {loading ? "Rodando..." : "Self-test"}
+          </button>
+        </div>
       </div>
 
+      {/* ---------------- Live scores (Step 2 orchestrator) ------------- */}
+      {scoresError && (
+        <div className="bg-red-500/10 border border-red-500/40 rounded-lg p-4 text-sm text-red-400">
+          Erro ao calcular scores: {scoresError}
+        </div>
+      )}
+
+      {scores && (
+        <div className="space-y-4">
+          <div className="rounded-lg p-4 border bg-amber-500/10 border-amber-500/40">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="text-sm font-medium text-amber-300">
+                Scores informativos — alertas automáticos DESATIVADOS
+              </span>
+              <span className="text-xs text-slate-400">
+                {scores.n_flagged}/{scores.n_tickers} cruzariam o limiar ·
+                gerado {new Date(scores.generated_at).toLocaleString("pt-BR")}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">{scores.alerting_note}</p>
+          </div>
+
+          <div className="bg-slate-900 rounded-lg border border-slate-800 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 text-xs uppercase">
+                  <th className="py-2 px-4 text-left">Ticker</th>
+                  <th className="py-2 px-2 text-right">Composite</th>
+                  <th className="py-2 px-2 text-right">Confiança</th>
+                  <th className="py-2 px-2 text-right">Cobertura</th>
+                  <th className="py-2 px-2 text-right" title="momentum — LPPL sobre o preço">
+                    Mom.
+                  </th>
+                  <th className="py-2 px-2 text-right" title="temporal — aceleração de notícias">
+                    Temp.
+                  </th>
+                  <th className="py-2 px-2 text-right" title="graph_fragility — superfície de contágio no grafo">
+                    Graph
+                  </th>
+                  <th className="py-2 px-3 text-center">Flag</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scores.tickers.map((row) => (
+                  <tr
+                    key={row.ticker}
+                    className={`border-b border-slate-800/50 ${
+                      row.flagged ? "bg-red-500/5" : ""
+                    }`}
+                  >
+                    <td className="py-2 px-4">
+                      <div className="font-mono font-bold text-slate-100">
+                        {row.ticker}
+                      </div>
+                      {row.context && (
+                        <div className="text-xs text-slate-500">
+                          {row.context.change_pct_30d != null
+                            ? `${row.context.change_pct_30d >= 0 ? "+" : ""}${row.context.change_pct_30d.toFixed(1)}% 30d`
+                            : "—"}
+                          {row.context.gsadf_explosive && (
+                            <span className="ml-1 text-red-400" title="GSADF explosivo">
+                              ⚡
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td
+                      className={`py-2 px-2 text-right font-mono font-bold ${
+                        row.flagged ? "text-red-400" : "text-slate-200"
+                      }`}
+                    >
+                      {row.composite.toFixed(2)}
+                    </td>
+                    <td
+                      className={`py-2 px-2 text-right font-mono ${
+                        row.aggregate_confidence < scores.flag_rule.min_confidence
+                          ? "text-slate-500"
+                          : "text-slate-200"
+                      }`}
+                    >
+                      {row.aggregate_confidence.toFixed(2)}
+                    </td>
+                    <td className="py-2 px-2 text-right font-mono text-slate-400">
+                      {row.n_signals_used}/{row.n_signals_total}
+                    </td>
+                    {SIGNAL_ORDER.map((name) => {
+                      const s = signal(row, name);
+                      const abstain = !s || s.confidence === 0;
+                      return (
+                        <td
+                          key={name}
+                          className={`py-2 px-2 text-right font-mono ${
+                            abstain ? "text-slate-600" : "text-slate-300"
+                          }`}
+                          title={s ? `${s.detail} (conf ${s.confidence.toFixed(2)})` : "sem dados"}
+                        >
+                          {abstain ? "—" : s!.score.toFixed(2)}
+                        </td>
+                      );
+                    })}
+                    <td className="py-2 px-3 text-center">
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded ${
+                          row.flagged
+                            ? "bg-red-500/20 text-red-400"
+                            : "bg-slate-700/40 text-slate-500"
+                        }`}
+                      >
+                        {row.flagged ? "⚠" : "—"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-slate-500">
+            Composite = média ponderada por confiança; Flag exige composite ≥{" "}
+            {scores.flag_rule.min_composite.toFixed(2)} <b>e</b> confiança ≥{" "}
+            {scores.flag_rule.min_confidence.toFixed(2)} (um sinal sozinho nunca
+            dispara). Pesos placeholder até o backtest calibrar. Passe o mouse
+            num score para ver o detalhe.
+          </p>
+        </div>
+      )}
+
+      {/* ---------------- Self-test (Step 1.5) -------------------------- */}
       {error && (
         <div className="bg-red-500/10 border border-red-500/40 rounded-lg p-4 text-sm text-red-400">
           Erro ao rodar self-test: {error}
         </div>
       )}
 
-      {!report && !error && !loading && (
+      {!report && !scores && !error && !scoresError && !loading && !scoresLoading && (
         <div className="text-slate-500 text-sm">
-          Clique em “Rodar self-test” para gerar o relatório. Depois use
-          “Copiar JSON” e cole de volta no chat para análise.
+          “Scores ao vivo” calcula o composto por ticker com dados reais.
+          “Self-test” valida a matemática com cenários sintéticos (copie o JSON
+          e cole de volta no chat para análise).
         </div>
       )}
 
       {report && (
         <>
+          <div className="pt-2">
+            <h2 className="text-xl font-bold text-slate-200">
+              Self-test — Passo 1.5
+            </h2>
+          </div>
           <div
             className={`rounded-lg p-4 border flex items-center justify-between ${
               report.all_pass
