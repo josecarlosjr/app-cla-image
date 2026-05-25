@@ -11,6 +11,8 @@ from bubble_scoring import (
     momentum_signal,
     temporal_signal,
     graph_fragility_signal,
+    valuation_signal,
+    credit_signal,
     composite_score,
     should_flag,
     run_selftest,
@@ -24,9 +26,9 @@ def test_selftest_all_pass():
     assert report["all_pass"], report
 
 
-def test_selftest_has_six_cases():
+def test_selftest_has_eight_cases():
     report = run_selftest()
-    assert report["total"] == 6
+    assert report["total"] == 8
 
 
 # --- momentum scorer ----------------------------------------------------
@@ -82,6 +84,62 @@ def test_graph_caps_at_one():
     assert s.score == 1.0
 
 
+# --- valuation scorer ---------------------------------------------------
+
+def test_valuation_missing_abstains():
+    s = valuation_signal(None)
+    assert s.score == 0.0 and s.confidence == 0.0
+
+
+def test_valuation_nonpositive_pe_abstains():
+    # bonds / loss-makers — no meaningful P/E
+    s = valuation_signal(-5.0)
+    assert s.confidence == 0.0
+
+
+def test_valuation_cheap_pe_scores_zero():
+    s = valuation_signal(15.0)
+    assert s.score == 0.0
+    assert s.confidence > 0.0  # we DO have data, it just says "cheap"
+
+
+def test_valuation_pe_proxy_is_low_confidence():
+    s = valuation_signal(45.0)
+    assert s.score == 1.0          # at/above extreme
+    assert s.confidence == 0.3     # trailing P/E is only a proxy
+
+
+def test_valuation_cape_preferred_and_high_confidence():
+    s = valuation_signal(30.0, cape=44.0)
+    assert s.score == 1.0
+    assert s.confidence == 0.8     # CAPE beats the P/E proxy
+    assert "CAPE" in s.detail
+
+
+# --- credit scorer ------------------------------------------------------
+
+def test_credit_missing_abstains():
+    s = credit_signal(None)
+    assert s.score == 0.0 and s.confidence == 0.0
+
+
+def test_credit_negative_gap_scores_zero_with_confidence():
+    # deleveraging — not a bubble, but we have the datum
+    s = credit_signal(-4.0)
+    assert s.score == 0.0
+    assert s.confidence > 0.0
+
+
+def test_credit_extreme_gap_maxes_out():
+    s = credit_signal(10.0)
+    assert s.score == 1.0
+
+
+def test_credit_trigger_zone_scores_partial():
+    s = credit_signal(6.0)  # (6-2)/(10-2) = 0.5
+    assert abs(s.score - 0.5) < 1e-9
+
+
 # --- composite invariants ----------------------------------------------
 
 def test_composite_all_missing_is_zero_not_crash():
@@ -119,7 +177,9 @@ def test_composite_confidence_weighting():
         weights={"momentum": 0.5, "temporal": 0.5},
     )
     # num = .5*1*1 + .5*0*.5 = .5 ; den = .5*1 + .5*.5 = .75 ; = .667
-    assert abs(comp["composite"] - (0.5 / 0.75)) < 1e-6
+    # composite is rounded to 4 dp by composite_score, so compare within
+    # that granularity (not 1e-6).
+    assert abs(comp["composite"] - (0.5 / 0.75)) < 1e-3
 
 
 def test_lone_weak_signal_high_composite_but_not_flagged():

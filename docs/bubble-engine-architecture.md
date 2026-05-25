@@ -115,8 +115,9 @@ ideia central:
 O `confidence` é a peça que evita o erro mais perigoso: um número confiante
 construído sobre dados ausentes. Um sinal fraco sozinho **nunca** dispara um
 alerta de bolha — exige corroboração de múltiplos sinais (disciplina
-Sornette). Sinais implementados até agora: `momentum` (LPPL), `temporal`,
-`graph_fragility`. Faltam: `valuation`, `credit`, `sentiment`, `structure`.
+Sornette). Sinais implementados: `momentum` (LPPL), `temporal`,
+`graph_fragility`, `valuation` (P/E; CAPE quando houver) e `credit`
+(BIS credit-to-GDP gap). Faltam: `sentiment`, `structure`.
 
 ---
 
@@ -158,7 +159,7 @@ descriptografa no cluster — nada de senha em texto plano no repositório.
     → quant_indicators
 
   Bubble Engine combina tudo:
-    momentum (LPPL) + temporal + graph_fragility [+ valuation/credit/...]
+    momentum (LPPL) + temporal + graph_fragility + valuation + credit [+ ...]
     → composite + aggregate_confidence
     → should_flag? → narrativa (Haiku) → Telegram + dashboard
 ```
@@ -171,9 +172,10 @@ descriptografa no cluster — nada de senha em texto plano no repositório.
 - Quant Layer (Onda 12): **completo** (dados + dashboard + alerts).
 - Bubble Engine (Onda 13): **núcleo de scoring validado** (Passo 1.5) +
   **orquestrador no ar** (Passo 2). Scores de bolha **por ticker** ao vivo,
-  combinando preço (momentum/LPPL) e notícias (temporal + graph_fragility) —
-  3 de 7 sinais ligados, expostos em `/api/bubble/scores` e na página Bubble
-  Engine. Backtest e calibração dos pesos ainda **pendentes**.
+  combinando preço (momentum/LPPL), notícias (temporal + graph_fragility) e
+  quant (valuation + credit) — 5 de 7 sinais ligados, expostos em
+  `/api/bubble/scores` e na página Bubble Engine. Backtest e calibração dos
+  pesos ainda **pendentes**.
 - **Nenhum alerta de bolha automático no ar**: os scores são *informativos*
   (o orquestrador não dispara Telegram) até o backtest validar a calibração —
   ver `docs/backtest-plan.md`.
