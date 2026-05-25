@@ -10,10 +10,13 @@ Scope (decided for Step 2): **per ticker**, combining
   - momentum         ← price   (LPPL bubble prob from quant_features)   "ticker+preço"
   - temporal         ← news    (attention acceleration, temporal.py)    "ticker+news"
   - graph_fragility  ← news    (knowledge-graph contagion surface)      "ticker+news"
+  - valuation        ← quant   (trailing P/E from quant_valuations)     "ticker+preço"
+  - credit           ← quant   (BIS credit-to-GDP gap, macro backdrop)
 
 i.e. each ticker is scored from its own price history AND from the
-news/graph signal attached to it. Sector-level ("categoria") scoring is
-deliberately out of scope here.
+news/graph signal attached to it, plus the valuation and macro-credit
+backdrop. Sector-level ("categoria") scoring is deliberately out of
+scope here. sentiment/structure remain unimplemented (weight 0).
 
 IMPORTANT — no automatic alerting. Per docs/backtest-plan.md §8 the
 sequence is: Step 2 (this — real scores per ticker, *no* Telegram) →
@@ -38,6 +41,8 @@ from bubble_scoring import (
     momentum_signal,
     temporal_signal,
     graph_fragility_signal,
+    valuation_signal,
+    credit_signal,
     composite_score,
     DEFAULT_WEIGHTS,
     FLAG_MIN_COMPOSITE,
@@ -102,19 +107,26 @@ def score_ticker(
     n_points: int | None,
     accel_ratio: float | None,
     graph_edges: list | None,
+    pe: float | None = None,
+    cape: float | None = None,
+    credit_gap_pct: float | None = None,
     context: dict | None = None,
 ) -> dict:
-    """Build the three Signals for one ticker and run the composite.
+    """Build the five Signals for one ticker and run the composite.
 
-    Pure: every input is already-fetched data. Returns the
-    composite_score dict (composite, aggregate_confidence, coverage,
-    flagged, components, ...) plus the ticker and optional display
-    context.
+    Pure: every input is already-fetched data. valuation (pe/cape) and
+    credit (credit_gap_pct) default to None so a caller with only the
+    price+news inputs still gets a valid score (those signals abstain).
+    Returns the composite_score dict (composite, aggregate_confidence,
+    coverage, flagged, components, ...) plus the ticker and optional
+    display context.
     """
     signals = [
         momentum_signal(lppl_bubble_prob, n_points),
         temporal_signal(accel_ratio),
         graph_fragility_signal(graph_edges),
+        valuation_signal(pe, cape),
+        credit_signal(credit_gap_pct),
     ]
     row = {"ticker": ticker, **composite_score(signals)}
     if context:
@@ -150,6 +162,19 @@ def _load_approved_graph() -> dict:
         return {"entities": [], "relationships": []}
 
 
+def _credit_gaps() -> dict[str, float]:
+    """Latest BIS credit-to-GDP gap per country series, safe."""
+    try:
+        import pg_database as pg
+        gaps = pg.get_latest_by_prefix("BIS_CREDIT_GAP_")
+        return {k: float(v["value"]) for k, v in gaps.items()}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "credit gap unavailable (%s); credit signal abstains", e,
+        )
+        return {}
+
+
 def _graph_edges(ticker: str, graph: dict) -> list[str]:
     """Reuse quant_alerts' 1-2 hop walk so the Bubble Engine and the
     quant alerts see the *same* graph neighbourhood (the edge cap in
@@ -180,6 +205,9 @@ def gather_and_score() -> dict:
     bar_counts = pg.get_bar_counts(tickers)
     accel = _accel_by_category()
     graph = _load_approved_graph()
+    # Credit is a macro backdrop; the watchlist is US-listed (plus global
+    # crypto/gold), so every ticker gets the US credit-to-GDP gap.
+    us_credit_gap = _credit_gaps().get("BIS_CREDIT_GAP_US")
 
     rows: list[dict] = []
     for w in watchlist:
@@ -190,9 +218,12 @@ def gather_and_score() -> dict:
             n_points=min(bar_counts.get(t, 0), _LPPL_WINDOW),
             accel_ratio=temporal_ratio_for_ticker(t, accel),
             graph_edges=_graph_edges(t, graph),
+            pe=w.get("pe"),
+            credit_gap_pct=us_credit_gap,
             context={
                 "close": w.get("close"),
                 "change_pct_30d": w.get("change_pct_30d"),
+                "pe": w.get("pe"),
                 "gsadf_explosive": w.get("gsadf_explosive", False),
             },
         ))
@@ -206,7 +237,7 @@ def gather_and_score() -> dict:
     return {
         "engine": "bubble_orchestrator",
         "step": "Onda 13 / Step 2",
-        "scope": "per-ticker · momentum=preço · temporal+graph_fragility=notícias",
+        "scope": "per-ticker · preço (momentum) + notícias (temporal, graph) + quant (valuation, credit)",
         "alerting_enabled": False,
         "alerting_note": (
             "scores apenas — alertas automáticos seguem bloqueados até o "

@@ -34,13 +34,18 @@ requires composite AND aggregate_confidence to clear thresholds, so a
 single signal can never trigger a bubble call on its own (the
 Sornette-style discipline: corroboration required).
 
-Step 1 wires the three dimensions that already exist as data:
+Step 1 wired the three dimensions that already existed as data:
   - momentum         (LPPL bubble probability, quant_features)
   - temporal         (acceleration ratio, Onda 5a temporal.py)
   - graph_fragility  (KG dependency-chain size, Onda 10 + Phase C)
 
-valuation / credit / sentiment / structure come later; their weights
-are declared (shape visible) but score nothing until their steps land.
+Step 2 adds the two backtestable quant dimensions whose data also
+already exists:
+  - valuation        (CAPE if available, else trailing-P/E proxy)
+  - credit           (BIS credit-to-GDP gap)
+
+sentiment / structure come later; their weights are declared (shape
+visible) but score nothing until their steps land.
 
 Weights are PLACEHOLDER — no labelled bubble dataset exists to fit them,
 so they're hand-set. Treat as a starting point, not a calibrated model;
@@ -143,20 +148,74 @@ def graph_fragility_signal(chain_edges: list | None) -> Signal:
     )
 
 
+# Valuation. CAPE (Shiller cyclically-adjusted P/E) is the right input —
+# a century of earnings-cycle-adjusted history — but it isn't ingested
+# yet, so we accept it optionally and fall back to trailing P/E at LOW
+# confidence. This is exactly what the confidence machinery is for: a
+# crude proxy can nudge the composite but can never flag a bubble on its
+# own. Thresholds are placeholder (calibrate via the backtest).
+_PE_RICH = 25.0       # below this: no valuation concern
+_PE_EXTREME = 45.0    # at/above this: maxed out
+_CAPE_RICH = 22.0
+_CAPE_EXTREME = 44.0  # ~dotcom peak
+
+
+def valuation_signal(
+    pe: float | None, cape: float | None = None,
+) -> Signal:
+    """Stretched multiples. CAPE if available (high confidence), else a
+    low-confidence trailing-P/E proxy. Non-positive / missing -> abstain
+    (bonds, loss-makers and crypto have no meaningful P/E)."""
+    if cape is not None and cape > 0:
+        score = _clamp01((cape - _CAPE_RICH) / (_CAPE_EXTREME - _CAPE_RICH))
+        return Signal("valuation", score, 0.8, f"CAPE {cape:.1f}")
+    if pe is not None and pe > 0:
+        score = _clamp01((pe - _PE_RICH) / (_PE_EXTREME - _PE_RICH))
+        return Signal("valuation", score, 0.3,
+                      f"trailing P/E {pe:.1f} (proxy, sem CAPE)")
+    return Signal("valuation", 0.0, 0.0, "no valuation data")
+
+
+# Credit. BIS credit-to-GDP gap (%) — the strongest historical leading
+# indicator of credit bubbles (Basel III uses it for the countercyclical
+# capital buffer). Same convention quant_alerts already states: >2% =
+# buffer trigger, ~10%+ = historical bubble territory. Country-level (a
+# macro backdrop), so the orchestrator feeds each ticker its home-market
+# gap. A negative gap (deleveraging) scores 0 but keeps confidence — we
+# have the data, it just says "no credit froth".
+_CREDIT_GAP_TRIGGER = 2.0
+_CREDIT_GAP_MAX = 10.0
+
+
+def credit_signal(credit_gap_pct: float | None) -> Signal:
+    if credit_gap_pct is None:
+        return Signal("credit", 0.0, 0.0, "no BIS credit-gap data")
+    score = _clamp01(
+        (credit_gap_pct - _CREDIT_GAP_TRIGGER)
+        / (_CREDIT_GAP_MAX - _CREDIT_GAP_TRIGGER)
+    )
+    return Signal("credit", score, 0.7,
+                  f"BIS credit-to-GDP gap {credit_gap_pct:+.1f}%")
+
+
 # ---------------------------------------------------------------------------
 # Composite + flag rule
 # ---------------------------------------------------------------------------
 
-# Placeholder weights. The three live signals sum to 1.0; the rest are
-# declared (so the shape is visible) but score nothing until their
-# steps land. NOT calibrated — no labelled bubble dataset exists.
+# Placeholder weights — NOT calibrated (no labelled bubble dataset; the
+# backtest is what calibrates these). momentum/temporal/graph_fragility
+# are the price+news signals (Step 1); valuation/credit are the quant
+# signals (Step 2). sentiment/structure are still declared-only (score
+# nothing until their steps land). Absolute weights need not sum to 1 —
+# composite_score normalises — but every declared weight counts in the
+# evidence denominator, so a missing signal correctly drags confidence.
 DEFAULT_WEIGHTS: dict[str, float] = {
     "momentum": 0.40,
     "temporal": 0.30,
     "graph_fragility": 0.30,
-    # --- not implemented yet (Step 2+) ---
-    "valuation": 0.0,
-    "credit": 0.0,
+    "valuation": 0.20,
+    "credit": 0.20,
+    # --- not implemented yet (later steps) ---
     "sentiment": 0.0,
     "structure": 0.0,
 }
@@ -344,6 +403,42 @@ def run_selftest() -> dict:
         ],
         lambda c: c["composite"] > 0.9
         and c["aggregate_confidence"] < 0.2
+        and c["flagged"] is False,
+    )
+
+    # 7. Full quant bubble: price + news + valuation + credit all hot.
+    #    All five signals present -> high composite, full coverage, FIRES.
+    add(
+        "full_quant_bubble",
+        "5/5 sinais quentes -> composite alto, cobertura 5/5, DISPARA",
+        [
+            momentum_signal(0.90, 252),
+            temporal_signal(3.0),
+            graph_fragility_signal(["a->b", "b->c", "c->d",
+                                    "d->e", "e->f", "f->g"]),
+            valuation_signal(None, cape=42.0),
+            credit_signal(9.0),
+        ],
+        lambda c: c["composite"] > 0.7 and c["coverage"] == 1.0
+        and c["flagged"] is True,
+    )
+
+    # 8. Valuation + credit agree, but no price/news corroboration. The
+    #    composite renormalises high, yet only 2/5 of the evidence is in,
+    #    so aggregate_confidence stays well under the bar -> does NOT fire.
+    #    (Two quant signals alone aren't a bubble call.)
+    add(
+        "valuation_credit_only",
+        "só valuation+credit (2/5) -> composite alto mas conf baixa, NAO dispara",
+        [
+            momentum_signal(None, 0),
+            temporal_signal(None),
+            graph_fragility_signal([]),
+            valuation_signal(44.0),
+            credit_signal(9.0),
+        ],
+        lambda c: c["composite"] > 0.7
+        and c["aggregate_confidence"] < 0.5
         and c["flagged"] is False,
     )
 

@@ -49,6 +49,7 @@ type ScoreRow = {
   context?: {
     close: number | null;
     change_pct_30d: number | null;
+    pe?: number | null;
     gsadf_explosive: boolean;
   };
 };
@@ -67,7 +68,13 @@ type ScoresReport = {
   tickers: ScoreRow[];
 };
 
-const SIGNAL_ORDER = ["momentum", "temporal", "graph_fragility"];
+const SIGNALS: { name: string; label: string; title: string }[] = [
+  { name: "momentum", label: "Mom.", title: "momentum — LPPL sobre o preço" },
+  { name: "temporal", label: "Temp.", title: "temporal — aceleração de notícias" },
+  { name: "graph_fragility", label: "Graph", title: "graph_fragility — superfície de contágio no grafo" },
+  { name: "valuation", label: "Val.", title: "valuation — múltiplo (P/E; CAPE quando houver)" },
+  { name: "credit", label: "Cred.", title: "credit — BIS credit-to-GDP gap (pano de fundo macro)" },
+];
 
 function signal(row: ScoreRow, name: string): BubbleSignal | undefined {
   return row.components.find((c) => c.name === name);
@@ -185,15 +192,15 @@ export default function BubbleEngine() {
                   <th className="py-2 px-2 text-right">Composite</th>
                   <th className="py-2 px-2 text-right">Confiança</th>
                   <th className="py-2 px-2 text-right">Cobertura</th>
-                  <th className="py-2 px-2 text-right" title="momentum — LPPL sobre o preço">
-                    Mom.
-                  </th>
-                  <th className="py-2 px-2 text-right" title="temporal — aceleração de notícias">
-                    Temp.
-                  </th>
-                  <th className="py-2 px-2 text-right" title="graph_fragility — superfície de contágio no grafo">
-                    Graph
-                  </th>
+                  {SIGNALS.map((s) => (
+                    <th
+                      key={s.name}
+                      className="py-2 px-2 text-right"
+                      title={s.title}
+                    >
+                      {s.label}
+                    </th>
+                  ))}
                   <th className="py-2 px-3 text-center">Flag</th>
                 </tr>
               </thead>
@@ -241,7 +248,7 @@ export default function BubbleEngine() {
                     <td className="py-2 px-2 text-right font-mono text-slate-400">
                       {row.n_signals_used}/{row.n_signals_total}
                     </td>
-                    {SIGNAL_ORDER.map((name) => {
+                    {SIGNALS.map(({ name }) => {
                       const s = signal(row, name);
                       const abstain = !s || s.confidence === 0;
                       return (

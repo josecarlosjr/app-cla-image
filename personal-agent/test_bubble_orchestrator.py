@@ -66,17 +66,50 @@ def test_temporal_empty_data_is_none():
 # --- score_ticker -------------------------------------------------------
 
 def test_score_ticker_clear_bubble_flags():
+    # All five dimensions hot — price, news, valuation and credit.
     r = score_ticker(
         "QQQ",
         lppl_bubble_prob=0.91, n_points=252,
         accel_ratio=3.2,
         graph_edges=["a->b", "b->c", "c->d", "d->e", "e->f", "f->g"],
+        pe=44.0,
+        credit_gap_pct=9.0,
     )
     assert r["ticker"] == "QQQ"
     assert r["composite"] > 0.70
     assert r["aggregate_confidence"] >= 0.50
     assert r["coverage"] == 1.0
+    assert r["n_signals_total"] == 5
     assert r["flagged"] is True
+
+
+def test_score_ticker_builds_valuation_and_credit():
+    r = score_ticker(
+        "SPY",
+        lppl_bubble_prob=0.2, n_points=252,
+        accel_ratio=None, graph_edges=[],
+        pe=44.0, credit_gap_pct=9.0,
+    )
+    names = {c["name"] for c in r["components"]}
+    assert {"valuation", "credit"} <= names
+    val = next(c for c in r["components"] if c["name"] == "valuation")
+    cred = next(c for c in r["components"] if c["name"] == "credit")
+    assert val["confidence"] > 0 and val["score"] > 0
+    assert cred["confidence"] > 0 and cred["score"] > 0
+
+
+def test_score_ticker_valuation_credit_alone_do_not_flag():
+    # No price/news, only valuation+credit hot: composite renormalises
+    # high but thin coverage keeps it from flagging.
+    r = score_ticker(
+        "XLF",
+        lppl_bubble_prob=None, n_points=0,
+        accel_ratio=None, graph_edges=None,
+        pe=44.0, credit_gap_pct=9.0,
+    )
+    assert r["composite"] > 0.70
+    assert r["aggregate_confidence"] < 0.50
+    assert r["flagged"] is False
 
 
 def test_score_ticker_calm_does_not_flag():
