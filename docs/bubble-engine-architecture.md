@@ -169,7 +169,11 @@ descriptografa no cluster — nada de senha em texto plano no repositório.
 
 - Camadas 1 e 2: **operacionais**.
 - Quant Layer (Onda 12): **completo** (dados + dashboard + alerts).
-- Bubble Engine (Onda 13): **núcleo de scoring validado** (Passo 1.5), 3 de 7
-  sinais ligados. Orquestrador (dados reais por setor) e backtest **pendentes**.
-- **Nenhum alerta de bolha automático no ar** até o backtest validar — ver
-  `docs/backtest-plan.md`.
+- Bubble Engine (Onda 13): **núcleo de scoring validado** (Passo 1.5) +
+  **orquestrador no ar** (Passo 2). Scores de bolha **por ticker** ao vivo,
+  combinando preço (momentum/LPPL) e notícias (temporal + graph_fragility) —
+  3 de 7 sinais ligados, expostos em `/api/bubble/scores` e na página Bubble
+  Engine. Backtest e calibração dos pesos ainda **pendentes**.
+- **Nenhum alerta de bolha automático no ar**: os scores são *informativos*
+  (o orquestrador não dispara Telegram) até o backtest validar a calibração —
+  ver `docs/backtest-plan.md`.
