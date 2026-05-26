@@ -1331,6 +1331,87 @@ def get_quality_metrics(*, days: int = 90) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Unlabelled events (Onda 11) — feeds the outcome-labelling UI
+# ---------------------------------------------------------------------------
+
+_UNLABELLED_PATTERN_SQL = """
+    SELECT 'pattern' AS event_type, CAST(p.id AS TEXT) AS event_id,
+           p.confidence AS confidence, p.categories_json AS categories_json,
+           NULL AS pillars_json, p.analysis AS detail, p.timestamp AS ts
+    FROM patterns p
+    WHERE NOT EXISTS (
+        SELECT 1 FROM event_outcomes o
+        WHERE o.event_type = 'pattern' AND o.event_id = CAST(p.id AS TEXT)
+    )
+"""
+
+_UNLABELLED_CHAIN_SQL = """
+    SELECT 'chain' AS event_type, CAST(c.id AS TEXT) AS event_id,
+           NULL AS confidence, NULL AS categories_json,
+           c.pillars_json AS pillars_json, c.narrative AS detail,
+           c.detected_at AS ts
+    FROM cross_pillar_chains c
+    WHERE NOT EXISTS (
+        SELECT 1 FROM event_outcomes o
+        WHERE o.event_type = 'chain' AND o.event_id = CAST(c.id AS TEXT)
+    )
+"""
+
+_UNLABELLED_SOURCES = {
+    "pattern": _UNLABELLED_PATTERN_SQL,
+    "chain": _UNLABELLED_CHAIN_SQL,
+}
+
+
+def get_unlabelled_events(
+    *, event_type: str = "", limit: int = 50, offset: int = 0,
+) -> dict:
+    """Patterns / chains with no outcome marked yet, newest first.
+
+    Anti-joins event_outcomes on the (event_type, event_id) convention the
+    labelling UI writes with: event_id is str() of the row's integer id.
+    Returns {events, total, limit, offset} for offset-based pagination.
+    """
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    et = (event_type or "").strip().lower()
+
+    if et in _UNLABELLED_SOURCES:
+        union = _UNLABELLED_SOURCES[et]
+    elif et == "":
+        union = f"{_UNLABELLED_PATTERN_SQL} UNION ALL {_UNLABELLED_CHAIN_SQL}"
+    else:
+        return {"events": [], "total": 0, "limit": limit, "offset": offset}
+
+    conn = _db()
+    total = conn.execute(f"SELECT COUNT(*) AS n FROM ({union}) AS sub").fetchone()["n"]
+    rows = conn.execute(
+        f"SELECT * FROM ({union}) AS sub ORDER BY ts DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+
+    events = []
+    for r in rows:
+        if r["event_type"] == "pattern":
+            cats = json.loads(r["categories_json"] or "[]")
+            title = f"{r['confidence']} · {', '.join(cats) if cats else '—'}"
+            kind = "Pattern"
+        else:
+            pillars = json.loads(r["pillars_json"] or "[]")
+            title = " → ".join(pillars) if pillars else "cross-pillar"
+            kind = "Chain"
+        events.append({
+            "event_type": r["event_type"],
+            "event_id": r["event_id"],
+            "kind": kind,
+            "title": title,
+            "detail": r["detail"] or "",
+            "timestamp": r["ts"] or "",
+        })
+    return {"events": events, "total": total, "limit": limit, "offset": offset}
+
+
+# ---------------------------------------------------------------------------
 # Backtest runs (Onda 11)
 # ---------------------------------------------------------------------------
 

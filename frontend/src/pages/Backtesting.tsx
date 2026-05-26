@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  api, BacktestResult, BacktestRun, CrossPillarChain, Pattern,
-  QualityMetrics, SystemSnapshot,
+  api, BacktestResult, BacktestRun, QualityMetrics, SystemSnapshot,
+  UnlabelledEvent, UnlabelledResponse,
 } from "../api";
 
 type Labelable = {
@@ -12,6 +12,17 @@ type Labelable = {
   detail: string;
   timestamp: string;
 };
+
+function toLabelable(e: UnlabelledEvent): Labelable {
+  return {
+    eventType: e.event_type === "chain" ? "chain" : "pattern",
+    id: e.event_id,
+    kind: e.kind,
+    title: e.title,
+    detail: e.detail,
+    timestamp: e.timestamp,
+  };
+}
 
 const SNAPSHOT_LABELS: Record<string, string> = {
   trends: "Trends",
@@ -34,6 +45,8 @@ export default function Backtesting() {
   const [labelIdx, setLabelIdx] = useState(0);
   const [labelledCount, setLabelledCount] = useState(0);
   const [labelMsg, setLabelMsg] = useState("");
+  const [labelTotal, setLabelTotal] = useState(0);
+  const [labelLoadingMore, setLabelLoadingMore] = useState(false);
 
   const loadAll = async () => {
     try {
@@ -52,48 +65,36 @@ export default function Backtesting() {
 
   const loadLabelQueue = async () => {
     try {
-      const [p, c, o] = await Promise.all([
-        api.get<{ patterns: Pattern[] }>("/patterns"),
-        api.get<{ chains: CrossPillarChain[] }>("/cross-pillar/chains", {
-          params: { limit: 50 },
-        }),
-        api.get<{ outcomes: { event_type: string; event_id: string }[] }>(
-          "/outcomes", { params: { limit: 1000 } },
-        ),
-      ]);
-      const labelled = new Set(
-        (o.data.outcomes || []).map((x) => `${x.event_type}:${x.event_id}`),
-      );
-      const items: Labelable[] = [];
-      for (const pat of p.data.patterns || []) {
-        const id = String(pat.id);
-        if (labelled.has(`pattern:${id}`)) continue;
-        items.push({
-          eventType: "pattern",
-          id,
-          kind: "Pattern",
-          title: `${pat.confidence} · ${(pat.categories || []).join(", ") || "—"}`,
-          detail: pat.analysis || "",
-          timestamp: pat.timestamp,
-        });
-      }
-      for (const ch of c.data.chains || []) {
-        const id = String(ch.id ?? ch.members_hash);
-        if (labelled.has(`chain:${id}`)) continue;
-        items.push({
-          eventType: "chain",
-          id,
-          kind: "Chain",
-          title: (ch.pillars || []).join(" → ") || "cross-pillar",
-          detail: ch.narrative || "",
-          timestamp: ch.detected_at || ch.window_end || "",
-        });
-      }
-      items.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
-      setLabelQueue(items);
+      const res = await api.get<UnlabelledResponse>("/events/unlabelled", {
+        params: { limit: 50, offset: 0 },
+      });
+      setLabelQueue((res.data.events || []).map(toLabelable));
+      setLabelTotal(res.data.total || 0);
       setLabelIdx(0);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const loadMore = async () => {
+    if (labelLoadingMore) return;
+    setLabelLoadingMore(true);
+    try {
+      // offset = current queue length: every mark removes the item server-side
+      // too, so the queue always holds a prefix of the unlabelled ordering.
+      const res = await api.get<UnlabelledResponse>("/events/unlabelled", {
+        params: { limit: 50, offset: labelQueue.length },
+      });
+      const have = new Set(labelQueue.map((it) => `${it.eventType}:${it.id}`));
+      const fresh = (res.data.events || [])
+        .map(toLabelable)
+        .filter((it) => !have.has(`${it.eventType}:${it.id}`));
+      setLabelQueue((q) => [...q, ...fresh]);
+      setLabelTotal(res.data.total || 0);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLabelLoadingMore(false);
     }
   };
 
@@ -120,6 +121,7 @@ export default function Backtesting() {
       setLabelQueue(next);
       setLabelIdx(Math.max(0, Math.min(labelIdx, next.length - 1)));
       setLabelledCount((n) => n + 1);
+      setLabelTotal((n) => Math.max(0, n - 1));
       setLabelMsg("");
       refreshQuality();
     } catch (e: any) {
@@ -340,7 +342,7 @@ export default function Backtesting() {
             Rotular eventos (ground truth)
           </h2>
           <span className="text-xs text-slate-500">
-            {labelQueue.length} por rotular · {labelledCount} nesta sessão
+            {labelTotal} por rotular · {labelledCount} marcados nesta sessão
           </span>
         </div>
         <p className="text-xs text-slate-500 mb-4">
@@ -412,6 +414,16 @@ export default function Backtesting() {
                   </li>
                 ))}
               </ul>
+            )}
+
+            {labelQueue.length < labelTotal && (
+              <button
+                onClick={loadMore}
+                disabled={labelLoadingMore}
+                className="px-3 py-1.5 rounded text-sm font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-50 transition"
+              >
+                {labelLoadingMore ? "A carregar..." : "Carregar mais 50"}
+              </button>
             )}
           </div>
         )}
