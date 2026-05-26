@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
 import {
-  api, BacktestResult, BacktestRun, QualityMetrics, SystemSnapshot,
+  api, BacktestResult, BacktestRun, CrossPillarChain, Pattern,
+  QualityMetrics, SystemSnapshot,
 } from "../api";
+
+type Labelable = {
+  eventType: "pattern" | "chain";
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  timestamp: string;
+};
 
 const SNAPSHOT_LABELS: Record<string, string> = {
   trends: "Trends",
@@ -20,6 +30,10 @@ export default function Backtesting() {
   const [quality, setQuality] = useState<QualityMetrics | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
+  const [labelQueue, setLabelQueue] = useState<Labelable[]>([]);
+  const [labelIdx, setLabelIdx] = useState(0);
+  const [labelledCount, setLabelledCount] = useState(0);
+  const [labelMsg, setLabelMsg] = useState("");
 
   const loadAll = async () => {
     try {
@@ -36,9 +50,119 @@ export default function Backtesting() {
     }
   };
 
+  const loadLabelQueue = async () => {
+    try {
+      const [p, c, o] = await Promise.all([
+        api.get<{ patterns: Pattern[] }>("/patterns"),
+        api.get<{ chains: CrossPillarChain[] }>("/cross-pillar/chains", {
+          params: { limit: 50 },
+        }),
+        api.get<{ outcomes: { event_type: string; event_id: string }[] }>(
+          "/outcomes", { params: { limit: 1000 } },
+        ),
+      ]);
+      const labelled = new Set(
+        (o.data.outcomes || []).map((x) => `${x.event_type}:${x.event_id}`),
+      );
+      const items: Labelable[] = [];
+      for (const pat of p.data.patterns || []) {
+        const id = String(pat.id);
+        if (labelled.has(`pattern:${id}`)) continue;
+        items.push({
+          eventType: "pattern",
+          id,
+          kind: "Pattern",
+          title: `${pat.confidence} · ${(pat.categories || []).join(", ") || "—"}`,
+          detail: pat.analysis || "",
+          timestamp: pat.timestamp,
+        });
+      }
+      for (const ch of c.data.chains || []) {
+        const id = String(ch.id ?? ch.members_hash);
+        if (labelled.has(`chain:${id}`)) continue;
+        items.push({
+          eventType: "chain",
+          id,
+          kind: "Chain",
+          title: (ch.pillars || []).join(" → ") || "cross-pillar",
+          detail: ch.narrative || "",
+          timestamp: ch.detected_at || ch.window_end || "",
+        });
+      }
+      items.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+      setLabelQueue(items);
+      setLabelIdx(0);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const refreshQuality = async () => {
+    try {
+      const q = await api.get<QualityMetrics>("/metrics/quality", {
+        params: { days: 90 },
+      });
+      setQuality(q.data);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const mark = async (outcome: "true_positive" | "false_positive" | "unclear") => {
+    const item = labelQueue[labelIdx];
+    if (!item) return;
+    try {
+      await api.post(`/outcomes/${item.eventType}/${item.id}`, {
+        outcome,
+        event_timestamp: item.timestamp,
+      });
+      const next = labelQueue.filter((_, i) => i !== labelIdx);
+      setLabelQueue(next);
+      setLabelIdx(Math.max(0, Math.min(labelIdx, next.length - 1)));
+      setLabelledCount((n) => n + 1);
+      setLabelMsg("");
+      refreshQuality();
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || "erro desconhecido";
+      setLabelMsg(`Erro ao marcar outcome: ${detail}`);
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     loadAll();
+    loadLabelQueue();
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
+        return;
+      }
+      if (labelQueue.length === 0) return;
+      const k = e.key.toLowerCase();
+      if (k === "t") {
+        e.preventDefault();
+        mark("true_positive");
+      } else if (k === "f") {
+        e.preventDefault();
+        mark("false_positive");
+      } else if (k === "u") {
+        e.preventDefault();
+        mark("unclear");
+      } else if (k === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        setLabelIdx((i) => Math.min(i + 1, labelQueue.length - 1));
+      } else if (k === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setLabelIdx((i) => Math.max(i - 1, 0));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelQueue, labelIdx]);
 
   const handleRun = async () => {
     setRunning(true);
@@ -82,6 +206,7 @@ export default function Backtesting() {
   const summary = latest?.summary || runs[0]?.result.summary;
   const maxArticles = Math.max(1, ...ticks.map((t) => t.articles_visible));
   const maxPatterns = Math.max(1, ...ticks.map((t) => t.patterns_visible));
+  const cur = labelQueue[labelIdx];
 
   return (
     <div className="space-y-6">
@@ -209,6 +334,89 @@ export default function Backtesting() {
         </div>
       )}
 
+      <div className="bg-slate-900 rounded-lg border border-slate-800 p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm uppercase tracking-wider text-slate-400">
+            Rotular eventos (ground truth)
+          </h2>
+          <span className="text-xs text-slate-500">
+            {labelQueue.length} por rotular · {labelledCount} nesta sessão
+          </span>
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Atalhos: <kbd className="px-1 bg-slate-800 rounded">T</kbd> acertou (TP) ·{" "}
+          <kbd className="px-1 bg-slate-800 rounded">F</kbd> falhou (FP) ·{" "}
+          <kbd className="px-1 bg-slate-800 rounded">U</kbd> incerto ·{" "}
+          <kbd className="px-1 bg-slate-800 rounded">J</kbd>/<kbd className="px-1 bg-slate-800 rounded">K</kbd> navegar
+        </p>
+        {labelMsg && <div className="text-sm text-red-400 mb-3">{labelMsg}</div>}
+        {labelQueue.length === 0 || !cur ? (
+          <p className="text-sm text-slate-500">
+            Nada por rotular. Corre o backtest / aguarda novos patterns e chains.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div className="bg-slate-950 border border-slate-700 rounded-lg p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="px-2 py-0.5 text-xs rounded-full bg-primary-600/30 text-primary-300">
+                  {cur.kind}
+                </span>
+                <span className="text-sm font-medium">{cur.title}</span>
+                <span className="ml-auto text-xs text-slate-500 font-mono">
+                  {cur.timestamp ? new Date(cur.timestamp).toLocaleString("pt-BR") : "—"}
+                </span>
+              </div>
+              {cur.detail && (
+                <p className="text-sm text-slate-300 whitespace-pre-wrap mb-3 max-h-40 overflow-y-auto">
+                  {cur.detail}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => mark("true_positive")}
+                  className="px-3 py-1.5 rounded text-sm font-medium bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30 transition"
+                >
+                  [T] Acertou
+                </button>
+                <button
+                  onClick={() => mark("false_positive")}
+                  className="px-3 py-1.5 rounded text-sm font-medium bg-red-600/20 text-red-300 hover:bg-red-600/30 transition"
+                >
+                  [F] Falhou
+                </button>
+                <button
+                  onClick={() => mark("unclear")}
+                  className="px-3 py-1.5 rounded text-sm font-medium bg-slate-700 text-slate-300 hover:bg-slate-600 transition"
+                >
+                  [U] Incerto
+                </button>
+              </div>
+            </div>
+
+            {labelQueue.length > 1 && (
+              <ul className="space-y-1 text-xs max-h-40 overflow-y-auto">
+                {labelQueue.map((it, i) => (
+                  <li key={`${it.eventType}:${it.id}`}>
+                    <button
+                      onClick={() => setLabelIdx(i)}
+                      className={`w-full text-left px-2 py-1 rounded flex items-center gap-2 ${
+                        i === labelIdx ? "bg-slate-800" : "hover:bg-slate-800/50"
+                      }`}
+                    >
+                      <span className="text-slate-500 w-14">{it.kind}</span>
+                      <span className="flex-1 truncate text-slate-300">{it.title}</span>
+                      <span className="text-slate-600 font-mono">
+                        {it.timestamp ? new Date(it.timestamp).toLocaleDateString("pt-BR") : ""}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-slate-900 rounded-lg border border-slate-800 p-5">
           <h2 className="text-sm uppercase tracking-wider text-slate-400 mb-4">
@@ -239,7 +447,7 @@ export default function Backtesting() {
             </table>
           ) : (
             <p className="text-sm text-slate-500">
-              Marque outcomes de eventos (TP/FP) para ver precisao acumulada
+              Sem precisão ainda — use "Rotular eventos" acima para marcar TP/FP.
             </p>
           )}
         </div>
