@@ -628,6 +628,15 @@ async def get_quality_metrics_endpoint(
     return db.get_quality_metrics(days=days)
 
 
+@app.get("/api/events/unlabelled")
+async def get_unlabelled_events_endpoint(
+    event_type: str = Query("", alias="type", description="Filter: pattern, chain"),
+    limit: int = Query(50, ge=1, le=200, description="Page size (max 200)"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+):
+    return db.get_unlabelled_events(event_type=event_type, limit=limit, offset=offset)
+
+
 # ---------------------------------------------------------------------------
 # Dynamic Knowledge Graph (Onda 10)
 # ---------------------------------------------------------------------------

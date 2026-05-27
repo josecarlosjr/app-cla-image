@@ -207,6 +207,22 @@ export type QualityMetrics = {
   }>;
 };
 
+export type UnlabelledEvent = {
+  event_type: string;
+  event_id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  timestamp: string;
+};
+
+export type UnlabelledResponse = {
+  events: UnlabelledEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type GraphEntity = {
   id: number;
   name: string;
