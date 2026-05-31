@@ -216,27 +216,31 @@ async def refresh_feeds():
     from trend_scorer import calculate_scores, calculate_connections
     from relevance_filter import score_articles, save_scored
 
-    fm = FeedManager()
-    new_articles = await fm.fetch_all()
-    all_articles = fm.get_all_cached()
+    try:
+        fm = FeedManager()
+        new_articles = await fm.fetch_all()
+        all_articles = fm.get_all_cached()
 
-    scores = calculate_scores(all_articles)
-    patterns = db.get_patterns()
-    connections = calculate_connections(patterns)
+        scores = calculate_scores(all_articles)
+        patterns = db.get_patterns()
+        connections = calculate_connections(patterns)
 
-    output = dict(scores)
-    output["connections"] = connections
-    output["updated_at"] = datetime.now().isoformat()
-    db.save_trend_scores(output)
+        output = dict(scores)
+        output["connections"] = connections
+        output["updated_at"] = datetime.now().isoformat()
+        db.save_trend_scores(output)
 
-    scored = await score_articles(all_articles, patterns)
-    save_scored(scored)
+        scored = await score_articles(all_articles, patterns)
+        save_scored(scored)
 
-    return {
-        "new_articles": len(new_articles),
-        "total_cached": len(all_articles),
-        "scored": len(scored),
-    }
+        return {
+            "new_articles": len(new_articles),
+            "total_cached": len(all_articles),
+            "scored": len(scored),
+        }
+    except Exception as e:
+        logger.error("Feeds refresh failed: %s", e, exc_info=True)
+        raise HTTPException(500, f"Refresh failed: {e}")
 
 
 # ---------------------------------------------------------------------------

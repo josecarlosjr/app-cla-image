@@ -132,8 +132,10 @@ export default function News() {
         `${data.new_articles} novos artigos, ${data.scored} com score`
       );
       await loadData();
-    } catch {
-      setRefreshResult("Erro ao atualizar feeds");
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail || e?.message || "erro desconhecido";
+      setRefreshResult(`Erro ao atualizar feeds: ${detail}`);
+      console.error(e);
     } finally {
       setRefreshing(false);
     }
