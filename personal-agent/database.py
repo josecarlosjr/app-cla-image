@@ -19,6 +19,7 @@ import json
 import os
 import sqlite3
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -1303,15 +1304,39 @@ def get_outcome_for(event_type: str, event_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def get_quality_metrics(*, days: int = 90) -> dict:
-    """Aggregate outcomes by type → precision / counts."""
+def _wilson_interval(tp: int, total: int, z: float = 1.96):
+    """Wilson 95% score interval for a binomial proportion.
+
+    Honest for small n: gives (None, None) when total <= 0, asymmetric
+    bounds otherwise (Wilson is exact at p=0 or p=1, no need to clamp).
+    Returns rounded (low, high) ∈ [0, 1].
+    """
+    if total <= 0:
+        return (None, None)
+    p = tp / total
+    denom = 1.0 + (z * z) / total
+    centre = (p + (z * z) / (2 * total)) / denom
+    margin = (z * math.sqrt((p * (1.0 - p) + (z * z) / (4 * total)) / total)) / denom
+    return (round(max(0.0, centre - margin), 3), round(min(1.0, centre + margin), 3))
+
+
+def get_quality_metrics(*, days: int = 90, by: str = "marked_at") -> dict:
+    """Aggregate outcomes by type → precision (Wilson 95% CI) + n.
+
+    ``by`` chooses the time column for the window: ``marked_at`` (when the
+    outcome was labelled, default) or ``event_timestamp`` (when the event
+    actually happened). Legacy outcomes with empty event_timestamp are
+    excluded when ``by='event_timestamp'``.
+    """
+    col = "event_timestamp" if by == "event_timestamp" else "marked_at"
+    extra = " AND event_timestamp != ''" if col == "event_timestamp" else ""
     conn = _db()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     rows = conn.execute(
-        """SELECT event_type, outcome, COUNT(*) as cnt
-           FROM event_outcomes
-           WHERE marked_at >= ?
-           GROUP BY event_type, outcome""",
+        f"""SELECT event_type, outcome, COUNT(*) as cnt
+            FROM event_outcomes
+            WHERE {col} >= ?{extra}
+            GROUP BY event_type, outcome""",
         (cutoff,),
     ).fetchall()
     by_type: dict[str, dict] = {}
@@ -1324,10 +1349,14 @@ def get_quality_metrics(*, days: int = 90) -> dict:
         bucket["total"] += r["cnt"]
     for et, b in by_type.items():
         labelled = b["true_positive"] + b["false_positive"]
+        b["n"] = labelled
         b["precision"] = (
             round(b["true_positive"] / labelled, 3) if labelled > 0 else None
         )
-    return {"window_days": days, "by_type": by_type}
+        low, high = _wilson_interval(b["true_positive"], labelled)
+        b["precision_low"] = low
+        b["precision_high"] = high
+    return {"window_days": days, "filter_by": col, "by_type": by_type}
 
 
 # ---------------------------------------------------------------------------

@@ -47,13 +47,18 @@ export default function Backtesting() {
   const [labelMsg, setLabelMsg] = useState("");
   const [labelTotal, setLabelTotal] = useState(0);
   const [labelLoadingMore, setLabelLoadingMore] = useState(false);
+  const [qualityBy, setQualityBy] = useState<"marked_at" | "event_timestamp">(
+    "marked_at",
+  );
 
   const loadAll = async () => {
     try {
       const [r, s, q] = await Promise.all([
         api.get("/backtest/runs", { params: { limit: 10 } }),
         api.get("/snapshots", { params: { days: 30, limit: 30 } }),
-        api.get<QualityMetrics>("/metrics/quality", { params: { days: 90 } }),
+        api.get<QualityMetrics>("/metrics/quality", {
+          params: { days: 90, by: qualityBy },
+        }),
       ]);
       setRuns(r.data.runs || []);
       setSnapshots(s.data.snapshots || []);
@@ -101,7 +106,7 @@ export default function Backtesting() {
   const refreshQuality = async () => {
     try {
       const q = await api.get<QualityMetrics>("/metrics/quality", {
-        params: { days: 90 },
+        params: { days: 90, by: qualityBy },
       });
       setQuality(q.data);
     } catch (e) {
@@ -165,6 +170,11 @@ export default function Backtesting() {
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [labelQueue, labelIdx]);
+
+  useEffect(() => {
+    refreshQuality();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qualityBy]);
 
   const handleRun = async () => {
     setRunning(true);
@@ -431,9 +441,22 @@ export default function Backtesting() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-slate-900 rounded-lg border border-slate-800 p-5">
-          <h2 className="text-sm uppercase tracking-wider text-slate-400 mb-4">
-            Quality metrics ({quality?.window_days || 90}d)
-          </h2>
+          <div className="flex items-center justify-between mb-4 gap-3">
+            <h2 className="text-sm uppercase tracking-wider text-slate-400">
+              Quality metrics ({quality?.window_days || 90}d)
+            </h2>
+            <select
+              value={qualityBy}
+              onChange={(e) =>
+                setQualityBy(e.target.value as "marked_at" | "event_timestamp")
+              }
+              title="Coluna de tempo usada para a janela"
+              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs"
+            >
+              <option value="marked_at">Janela por marcação</option>
+              <option value="event_timestamp">Janela por ocorrência</option>
+            </select>
+          </div>
           {quality && Object.keys(quality.by_type).length > 0 ? (
             <table className="w-full text-sm">
               <thead>
@@ -441,20 +464,40 @@ export default function Backtesting() {
                   <th className="py-2 text-left">Tipo</th>
                   <th className="py-2 text-right">TP</th>
                   <th className="py-2 text-right">FP</th>
-                  <th className="py-2 text-right">Precisao</th>
+                  <th className="py-2 text-right">n</th>
+                  <th className="py-2 text-right">Precisao (95% CI)</th>
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(quality.by_type).map(([type, m]) => (
-                  <tr key={type} className="border-b border-slate-800/50">
-                    <td className="py-2 font-medium">{type}</td>
-                    <td className="py-2 text-right text-emerald-400">{m.true_positive}</td>
-                    <td className="py-2 text-right text-red-400">{m.false_positive}</td>
-                    <td className="py-2 text-right">
-                      {m.precision != null ? `${(m.precision * 100).toFixed(0)}%` : "—"}
-                    </td>
-                  </tr>
-                ))}
+                {Object.entries(quality.by_type).map(([type, m]) => {
+                  const n = m.n ?? m.true_positive + m.false_positive;
+                  const margin =
+                    m.precision_low != null && m.precision_high != null
+                      ? (m.precision_high - m.precision_low) / 2
+                      : null;
+                  return (
+                    <tr key={type} className="border-b border-slate-800/50">
+                      <td className="py-2 font-medium">{type}</td>
+                      <td className="py-2 text-right text-emerald-400">{m.true_positive}</td>
+                      <td className="py-2 text-right text-red-400">{m.false_positive}</td>
+                      <td className="py-2 text-right text-slate-400">{n}</td>
+                      <td className="py-2 text-right">
+                        {m.precision != null ? (
+                          <span>
+                            {(m.precision * 100).toFixed(0)}%
+                            {margin != null && (
+                              <span className="text-slate-500 text-xs ml-1">
+                                ±{Math.round(margin * 100)}%
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           ) : (
