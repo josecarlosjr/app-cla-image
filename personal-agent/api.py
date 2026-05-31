@@ -624,8 +624,12 @@ async def list_outcomes(
 @app.get("/api/metrics/quality")
 async def get_quality_metrics_endpoint(
     days: int = Query(90, description="Lookback in days"),
+    by: str = Query(
+        "marked_at",
+        description="Time column: marked_at (when labelled) or event_timestamp (when event occurred)",
+    ),
 ):
-    return db.get_quality_metrics(days=days)
+    return db.get_quality_metrics(days=days, by=by)
 
 
 @app.get("/api/events/unlabelled")

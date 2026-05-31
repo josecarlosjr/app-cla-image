@@ -198,12 +198,16 @@ export type EventOutcome = {
 
 export type QualityMetrics = {
   window_days: number;
+  filter_by?: string;
   by_type: Record<string, {
     true_positive: number;
     false_positive: number;
     unclear: number;
     total: number;
+    n?: number;
     precision: number | null;
+    precision_low?: number | null;
+    precision_high?: number | null;
   }>;
 };
 
