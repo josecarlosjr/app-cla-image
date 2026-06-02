@@ -298,6 +298,25 @@ def _migrate_embeddings_schema(conn: sqlite3.Connection) -> None:
             )
         logger.info("Migrated embeddings table: added embedding_version column")
 
+    # Retag pre-versioning embeddings (tagged 'v0' by the ALTER TABLE default)
+    # to the current model — the only Voyage model the project has ever used
+    # is voyage-3-lite, so 'v0' rows are voyage-3-lite vectors mis-labelled.
+    # Without this, _reconcile_embedding_version_once() deletes them all on
+    # first refresh after a restart, forcing a bulk re-embed that hits the
+    # Voyage rate limit and falls back to a slow O(n²) TF-IDF on every text
+    # cached — long enough for the ingress to 502 the request.
+    with conn:
+        cur = conn.execute(
+            "UPDATE embeddings SET embedding_version = ? "
+            "WHERE embedding_version = 'v0'",
+            (EMBEDDING_VERSION_DEFAULT,),
+        )
+        if cur.rowcount:
+            logger.info(
+                "Retagged %d legacy 'v0' embeddings as %s",
+                cur.rowcount, EMBEDDING_VERSION_DEFAULT,
+            )
+
 
 def _ensure_vec_table(conn: sqlite3.Connection) -> None:
     if not _VEC_AVAILABLE:
