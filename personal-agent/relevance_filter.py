@@ -89,14 +89,31 @@ async def score_articles(
     articles: list[dict],
     patterns: list[dict],
     user_facts: list[str] | None = None,
+    max_corpus: int = 1000,
 ) -> list[dict]:
     """Score and filter articles by cross-source relevance.
 
     Uses semantic embeddings (Voyage AI) when available, TF-IDF fallback.
     Returns scored articles sorted by relevance_score DESC.
+
+    ``max_corpus`` caps the corpus to the N most-recent articles (by
+    fetched_at). With ~8k cached articles, an unbounded run is an O(n²)
+    cosine_similarity over 8k vectors plus a Voyage embed of every uncached
+    text — enough to trip the ingress 502 timeout when the cache is empty
+    and Voyage rate-limits. Older articles keep their previous scores.
     """
     if not articles:
         return []
+
+    if len(articles) > max_corpus:
+        original_count = len(articles)
+        articles = sorted(
+            articles, key=lambda a: a.get("fetched_at", ""), reverse=True,
+        )[:max_corpus]
+        logger.info(
+            "score_articles: corpus capped at %d most-recent (had %d)",
+            max_corpus, original_count,
+        )
 
     if user_facts is None:
         user_facts = _load_user_facts()
