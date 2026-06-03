@@ -30,14 +30,20 @@ from datetime import datetime, timedelta, timezone
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--db", help="path to agent.db (default: $DATA_DIR/agent.db or /data/agent.db)")
+ap.add_argument("--db", help="path to the SQLite DB (any filename); "
+                              "default: $DB_PATH or $DATA_DIR/agent.db")
 ap.add_argument("--det-days", type=int, default=30,
                 help="window (days) for the determinism replay")
 args = ap.parse_args()
 
-# DATA_DIR must be set before importing database.py.
+# The DB module reads DB_PATH / DATA_DIR at import time, so set them BEFORE
+# `import database` below. Passing the full --db path through DB_PATH
+# (instead of just dirname through DATA_DIR) lets the file be named anything
+# — fixes audit finding #7 (script was opening <dir>/agent.db regardless).
 if args.db:
-    os.environ["DATA_DIR"] = os.path.dirname(os.path.abspath(args.db)) or "."
+    db_abs = os.path.abspath(args.db)
+    os.environ["DB_PATH"] = db_abs
+    os.environ["DATA_DIR"] = os.path.dirname(db_abs) or "."
 sys.path.insert(0, os.path.join(_HERE, "..", "personal-agent"))
 
 import database as db                       # noqa: E402
