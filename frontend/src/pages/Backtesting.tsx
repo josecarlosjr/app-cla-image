@@ -471,10 +471,10 @@ export default function Backtesting() {
               <tbody>
                 {Object.entries(quality.by_type).map(([type, m]) => {
                   const n = m.n ?? m.true_positive + m.false_positive;
-                  const margin =
-                    m.precision_low != null && m.precision_high != null
-                      ? (m.precision_high - m.precision_low) / 2
-                      : null;
+                  // Wilson 95% CI is asymmetric (especially near p=0 or p=1),
+                  // so we render the interval [low, high] rather than a
+                  // misleading ±margin. .toFixed(1) keeps a single FP visible
+                  // (e.g. 197/198 -> 99.5%, not 100%).
                   return (
                     <tr key={type} className="border-b border-slate-800/50">
                       <td className="py-2 font-medium">{type}</td>
@@ -484,10 +484,10 @@ export default function Backtesting() {
                       <td className="py-2 text-right">
                         {m.precision != null ? (
                           <span>
-                            {(m.precision * 100).toFixed(0)}%
-                            {margin != null && (
+                            {(m.precision * 100).toFixed(1)}%
+                            {m.precision_low != null && m.precision_high != null && (
                               <span className="text-slate-500 text-xs ml-1">
-                                ±{Math.round(margin * 100)}%
+                                (IC 95%: {(m.precision_low * 100).toFixed(1)}% – {(m.precision_high * 100).toFixed(1)}%)
                               </span>
                             )}
                           </span>
