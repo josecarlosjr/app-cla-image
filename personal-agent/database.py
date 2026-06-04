@@ -32,7 +32,7 @@ except ImportError:
     _SQLITE_VEC_LIB_AVAILABLE = False
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-DB_PATH = os.path.join(DATA_DIR, "agent.db")
+DB_PATH = os.getenv("DB_PATH") or os.path.join(DATA_DIR, "agent.db")
 
 VOYAGE_EMBEDDING_DIM = 512
 EMBEDDING_VERSION_DEFAULT = "voyage-3-lite"
