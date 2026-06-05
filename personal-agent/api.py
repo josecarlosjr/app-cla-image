@@ -539,7 +539,12 @@ class OutcomeBody(BaseModel):
 
 
 class BacktestBody(BaseModel):
-    days_back: int = 30
+    # days_back: legacy sliding window [now - days_back, now]
+    # window_start/window_end: fixed ISO window (reproducible)
+    # Pass one mode or the other — server returns 400 if both are set.
+    days_back: int | None = None
+    window_start: str | None = None
+    window_end: str | None = None
     eval_step_hours: int = 24
     pattern_lookback_hours: int = 48
 
@@ -547,13 +552,19 @@ class BacktestBody(BaseModel):
 @app.post("/api/backtest/run")
 async def run_backtest_endpoint(body: BacktestBody):
     from backtest import run_backtest
-    days = max(1, min(body.days_back, 365))
+    days = body.days_back
+    if days is not None:
+        days = max(1, min(days, 365))
     try:
         return run_backtest(
             days_back=days,
+            window_start=body.window_start,
+            window_end=body.window_end,
             eval_step_hours=max(1, body.eval_step_hours),
             pattern_lookback_hours=max(1, body.pattern_lookback_hours),
         )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         logger.error("Backtest run failed: %s", e)
         raise HTTPException(500, f"Backtest failed: {e}")

@@ -174,35 +174,69 @@ def replay_window(
 
 def run_backtest(
     *,
-    days_back: int = 30,
+    days_back: int | None = None,
+    window_start: str | None = None,
+    window_end: str | None = None,
     eval_step_hours: int = 24,
     pattern_lookback_hours: int = 48,
 ) -> dict:
-    """Convenience wrapper: replay last N days and persist the result."""
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=days_back)
+    """Replay over a window and persist the result.
 
-    config = {
-        "days_back": days_back,
-        "eval_step_hours": eval_step_hours,
-        "pattern_lookback_hours": pattern_lookback_hours,
-    }
+    Two modes, mutually exclusive:
+
+    - **Fixed ISO window** — pass both ``window_start`` and ``window_end``
+      for a fully reproducible run. ``quality`` (now-relative) is NOT
+      attached to the result, so re-runs produce identical payloads modulo
+      ``run_id``. Fetch quality separately via ``/api/metrics/quality``.
+    - **Sliding window (legacy)** — pass ``days_back`` (or nothing; default
+      30). The window is ``[now - days_back, now]`` and the result embeds
+      ``quality`` for back-compat with prior callers.
+    """
+    if (window_start is None) != (window_end is None):
+        raise ValueError("Pass both window_start and window_end, or neither.")
+    fixed_window = window_start is not None
+    if fixed_window and days_back is not None:
+        raise ValueError(
+            "Pass either an ISO window (window_start/window_end) or days_back, "
+            "not both."
+        )
+
+    if fixed_window:
+        start_iso = window_start
+        end_iso = window_end
+        config: dict = {
+            "window_start": start_iso,
+            "window_end": end_iso,
+            "eval_step_hours": eval_step_hours,
+            "pattern_lookback_hours": pattern_lookback_hours,
+        }
+    else:
+        db_days = days_back if days_back is not None else 30
+        end_dt = datetime.now(timezone.utc)
+        start_dt = end_dt - timedelta(days=db_days)
+        start_iso = start_dt.isoformat()
+        end_iso = end_dt.isoformat()
+        config = {
+            "days_back": db_days,
+            "eval_step_hours": eval_step_hours,
+            "pattern_lookback_hours": pattern_lookback_hours,
+        }
+
     result = replay_window(
-        start_dt.isoformat(),
-        end_dt.isoformat(),
+        start_iso, end_iso,
         eval_step_hours=eval_step_hours,
         pattern_lookback_hours=pattern_lookback_hours,
     )
-    result["quality"] = get_quality_metrics(days=max(days_back, 30))
-    result["outcomes_in_window"] = _outcomes_in_window(
-        start_dt.isoformat(), end_dt.isoformat(),
-    )
+    result["outcomes_in_window"] = _outcomes_in_window(start_iso, end_iso)
+
+    # Quality is a now-relative report; attach it only on the sliding-window
+    # path so the fixed-window result stays deterministic across re-runs.
+    if not fixed_window:
+        result["quality"] = get_quality_metrics(days=max(db_days, 30))
 
     run_id = insert_backtest_run(
-        window_start=start_dt.isoformat(),
-        window_end=end_dt.isoformat(),
-        config=config,
-        result=result,
+        window_start=start_iso, window_end=end_iso,
+        config=config, result=result,
     )
     result["run_id"] = run_id
     return result
