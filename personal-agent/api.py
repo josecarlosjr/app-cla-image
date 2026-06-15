@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 import database as db
 
-from log_config import setup_logging
+from log_config import setup_logging, log_event
 
 setup_logging()
 
@@ -618,6 +618,15 @@ async def mark_outcome(event_type: str, event_id: str, body: OutcomeBody):
         outcome=body.outcome,
         notes=body.notes,
         event_timestamp=body.event_timestamp,
+    )
+    total = db._db().execute("SELECT COUNT(*) FROM event_outcomes").fetchone()[0]
+    log_event(
+        "outcome_marked",
+        event_type=event_type,
+        event_id=event_id,
+        outcome=body.outcome,
+        outcome_id=oid,
+        total_outcomes_now=total,
     )
     return {"id": oid, "event_type": event_type, "event_id": event_id,
             "outcome": body.outcome}
