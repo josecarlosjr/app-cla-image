@@ -16,7 +16,7 @@ from database import (
 )
 from telegram_format import to_telegram_html
 
-from log_config import setup_logging
+from log_config import setup_logging, log_event
 
 setup_logging()
 
@@ -335,10 +335,21 @@ async def search_patterns(topic: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 async def detect_patterns_on_demand() -> dict:
+    import time as _time
+    t0 = _time.perf_counter()
     fm = FeedManager()
     articles = fm.get_all_cached()
 
     if len(articles) < 5:
+        log_event(
+            "pattern_detection",
+            duration_ms=int((_time.perf_counter() - t0) * 1000),
+            articles_processed=len(articles),
+            clusters_found=0,
+            sonnet_calls=0,
+            new_patterns=0,
+            skipped_reason="too_few_articles",
+        )
         return {"new_patterns": 0, "clusters": 0, "articles": len(articles),
                 "message": f"Poucos artigos ({len(articles)}). Clique em 'Atualizar feeds' primeiro."}
 
@@ -351,6 +362,7 @@ async def detect_patterns_on_demand() -> dict:
     existing_titles = get_pattern_article_titles()
 
     new_count = 0
+    sonnet_calls = 0
     for cluster in strong[:5]:
         cluster_titles = {a.get("title", "") for a in cluster}
         if cluster_titles & existing_titles:
@@ -362,6 +374,7 @@ async def detect_patterns_on_demand() -> dict:
         all_cats.discard("other")
         categories = sorted(all_cats) if all_cats else ["general"]
 
+        sonnet_calls += 1
         pattern = await _analyze_pattern(cluster, categories)
         if not pattern:
             continue
@@ -371,6 +384,16 @@ async def detect_patterns_on_demand() -> dict:
 
     prune_patterns(MAX_PATTERNS_STORED)
     total = len(get_patterns())
+    log_event(
+        "pattern_detection",
+        duration_ms=int((_time.perf_counter() - t0) * 1000),
+        articles_processed=len(articles),
+        clusters_found=len(clusters),
+        strong_clusters=len(strong),
+        sonnet_calls=sonnet_calls,
+        new_patterns=new_count,
+        total_patterns_now=total,
+    )
     return {
         "new_patterns": new_count,
         "total_patterns": total,

@@ -16,6 +16,7 @@ generating useful signals or just noise?".
 """
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from database import (
@@ -27,6 +28,7 @@ from database import (
     insert_backtest_run,
     get_quality_metrics,
 )
+from log_config import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,9 @@ SNAPSHOT_TYPES = ("trends", "cross_pillar", "supply_chain", "graph")
 
 def capture_snapshots() -> dict:
     """Capture all snapshot types. Idempotent — call from cron every 6h."""
+    t0 = time.perf_counter()
     captured = {}
+    failed: list[str] = []
 
     try:
         from database import get_trend_scores_data
@@ -49,6 +53,7 @@ def capture_snapshots() -> dict:
             captured["trends"] = sid
     except Exception as e:
         logger.warning("trends snapshot failed: %s", e)
+        failed.append("trends")
 
     try:
         from cross_pillar import detect_chains
@@ -57,6 +62,7 @@ def capture_snapshots() -> dict:
         captured["cross_pillar"] = sid
     except Exception as e:
         logger.warning("cross_pillar snapshot failed: %s", e)
+        failed.append("cross_pillar")
 
     try:
         from supply_chain_analyzer import analyze
@@ -65,6 +71,7 @@ def capture_snapshots() -> dict:
         captured["supply_chain"] = sid
     except Exception as e:
         logger.warning("supply_chain snapshot failed: %s", e)
+        failed.append("supply_chain")
 
     try:
         from database import get_graph_for_display
@@ -78,8 +85,16 @@ def capture_snapshots() -> dict:
         captured["graph"] = sid
     except Exception as e:
         logger.warning("graph snapshot failed: %s", e)
+        failed.append("graph")
 
     logger.info("Snapshots captured: %s", captured)
+    log_event(
+        "snapshot_capture",
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+        snapshot_counts=captured,
+        types_captured=len(captured),
+        types_failed=failed,
+    )
     return captured
 
 
@@ -192,6 +207,7 @@ def run_backtest(
       30). The window is ``[now - days_back, now]`` and the result embeds
       ``quality`` for back-compat with prior callers.
     """
+    t0 = time.perf_counter()
     if (window_start is None) != (window_end is None):
         raise ValueError("Pass both window_start and window_end, or neither.")
     fixed_window = window_start is not None
@@ -239,6 +255,20 @@ def run_backtest(
         config=config, result=result,
     )
     result["run_id"] = run_id
+
+    summary = result.get("summary", {})
+    log_event(
+        "backtest_run",
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+        run_id=run_id,
+        mode="fixed" if fixed_window else "sliding",
+        window_start=start_iso,
+        window_end=end_iso,
+        tick_count=summary.get("tick_count", 0),
+        articles_observed=summary.get("total_articles_observed", 0),
+        patterns_observed=summary.get("total_patterns_observed", 0),
+        chains_observed=summary.get("total_chains_observed", 0),
+    )
     return result
 
 
