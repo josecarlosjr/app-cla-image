@@ -209,6 +209,18 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_backtest_created ON backtest_runs(created_at);
+
+CREATE TABLE IF NOT EXISTS macro_indicators (
+    indicator TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    value REAL NOT NULL,
+    source TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (indicator, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_macro_indicator_ts ON macro_indicators(indicator, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_macro_fetched_at ON macro_indicators(fetched_at DESC);
 """
 
 # ---------------------------------------------------------------------------
@@ -228,6 +240,7 @@ _LATE_ADDED_TABLES = (
     "system_snapshots",
     "event_outcomes",
     "backtest_runs",
+    "macro_indicators",
 )
 
 
