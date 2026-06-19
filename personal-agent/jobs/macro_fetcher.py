@@ -17,7 +17,8 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 # Make sibling modules (macro_repository, log_config) importable when this
 # script is launched as ``python jobs/macro_fetcher.py`` from inside
@@ -33,6 +34,27 @@ from log_config import setup_logging, log_event  # noqa: E402
 setup_logging()
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Fetcher return shape — two distinct drop counters so source-quality drift
+# (bad upstream data) doesn't get conflated with policy filtering (data we
+# intentionally don't insert):
+#
+#   dropped_source : upstream row was malformed / missing / sentinel
+#                    (FRED "." / empty / non-numeric / no date; CAPE
+#                    non-numeric value in a parseable date row)
+#   dropped_policy : upstream row was well-formed, but our policy filters
+#                    it out (CAPE: live intra-month row whose ts == today,
+#                    dropped so PRIMARY KEY (indicator, ts) stays idempotent
+#                    across daily runs)
+# ---------------------------------------------------------------------------
+
+class FetchResult(NamedTuple):
+    rows: list[dict]
+    dropped_source: int = 0
+    dropped_policy: int = 0
+
+
 # ---------------------------------------------------------------------------
 # Shared HTTP config + per-indicator defensive value ranges. Ranges live
 # here (not in ``macro_repository``) because they are an internal validation
@@ -44,12 +66,17 @@ _HTTP_TIMEOUT = 20.0
 _RETRY_WAIT_S = 30.0
 
 _VALUE_RANGES: dict[str, tuple[float, float]] = {
-    "cape_shiller": (4.0, 60.0),      # historical real range ~4.78..44.2
-    "vix":          (5.0, 150.0),     # VIX peaks ~89 in 2008; 150 = headroom
-    "hy_oas":       (1.0, 25.0),      # pct points
+    "cape_shiller": (4.0, 60.0),
+    "vix":          (5.0, 150.0),
+    "hy_oas":       (1.0, 25.0),
     "sp500_close":  (100.0, 20000.0),
-    "tnx_yield":    (0.0, 20.0),      # percent
+    "tnx_yield":    (0.0, 20.0),
 }
+
+# Run modes — see :func:`run_all`.
+MODE_DAILY = "daily"
+MODE_BACKFILL = "backfill"
+_DEFAULT_LOOKBACK_DAYS = 7   # >= 5 per the spec; covers weekends + 1-day buffer
 
 # ---------------------------------------------------------------------------
 # Shiller CAPE — scraped from multpl.com (Yale XLSX is updated manually and
@@ -120,22 +147,28 @@ def _parse_multpl_cape(
     scraped_at: str,
     *,
     start: str | None = None,
+    fatal_on_empty: bool = True,
     min_rows: int = _CAPE_MIN_ROWS,
     value_range: tuple[float, float] | None = None,
     require_year: str | None = _CAPE_REQUIRE_YEAR,
-) -> tuple[list[dict], int]:
-    """Parse the multpl.com Shiller-PE monthly table into observation rows.
+) -> FetchResult:
+    """Parse the multpl.com Shiller-PE monthly table into a :class:`FetchResult`.
 
-    Keeps only clean monthly observations (``day == 1``); the table's first
-    row is an intra-month *live* value dated today, which would otherwise
-    create a fresh row each daily run and break ``PRIMARY KEY (indicator,
-    ts)`` idempotency. ``dropped_source`` counts the live/non-day-1 rows
-    that were filtered out, so source-quality drift is visible in the
-    ``macro_fetcher_run`` summary.
+    Drop-counter discipline:
+      * ``dropped_policy`` += 1 for the intra-month live row (``day != 1``)
+        — well-formed but intentionally not persisted, so PRIMARY KEY
+        ``(indicator, ts)`` stays idempotent across daily runs.
+      * ``dropped_source`` += 1 for a parseable date row whose value is
+        not a float (upstream data integrity).
 
-    Defensive (raises ``RuntimeError``, nothing inserted): no table present,
-    fewer than ``min_rows`` data rows, no row for ``require_year``, or the
-    most-recent value outside ``value_range``.
+    Fatality discipline:
+      * Always raises ``RuntimeError`` on hard layout issues (no table,
+        too few data rows, missing current year, latest value out of
+        range). These are NOT empty-data — they're real problems.
+      * "No monthly rows survived after parse + start filter" is treated
+        as **empty** rather than fatal when ``fatal_on_empty=False``,
+        which is what the daily mode wants (an empty short window is
+        normal, not a failure).
     """
     from bs4 import BeautifulSoup
 
@@ -144,12 +177,12 @@ def _parse_multpl_cape(
     tables = soup.find_all("table")
     if not tables:
         raise RuntimeError("multpl CAPE: no <table> found in HTML (layout changed?)")
-    # The data table is by far the largest; auxiliary tables are tiny.
     table = max(tables, key=lambda t: len(t.find_all("tr")))
 
-    parsed: list[tuple[str, float, str]] = []  # (iso_ts, value, raw_date)
+    parsed: list[tuple[str, float, str]] = []
     data_row_count = 0
     dropped_source = 0
+    dropped_policy = 0
     for tr in table.find_all("tr"):
         cells = [c.get_text(strip=True) for c in tr.find_all(["td", "th"])]
         if len(cells) < 2:
@@ -158,15 +191,15 @@ def _parse_multpl_cape(
         try:
             dt = datetime.strptime(raw_date, "%b %d, %Y")
         except ValueError:
-            continue  # header row ("Date") or anything non-date
+            continue  # header / non-date row — not a data row
         data_row_count += 1
         if dt.day != 1:
-            dropped_source += 1
-            continue  # drop the intra-month live row
+            dropped_policy += 1   # the live intra-month row
+            continue
         try:
             value = float(raw_value)
         except ValueError:
-            dropped_source += 1
+            dropped_source += 1   # data row with non-numeric value
             continue
         parsed.append((dt.strftime("%Y-%m-%d"), value, raw_date))
 
@@ -176,10 +209,11 @@ def _parse_multpl_cape(
             "layout likely changed"
         )
     if not parsed:
+        # No clean monthly rows at all — that IS a layout/source issue
+        # regardless of mode, since we know the table has >=1800 data rows.
         raise RuntimeError("multpl CAPE: no monthly (day==1) rows after parse")
 
-    # parsed is descending (table is newest-first); most-recent == parsed[0]
-    latest_ts, latest_value, _ = parsed[0]
+    latest_ts, latest_value, _ = parsed[0]   # descending table
     if not (lo <= latest_value <= hi):
         raise RuntimeError(
             f"multpl CAPE: latest value {latest_value} ({latest_ts}) outside "
@@ -204,24 +238,32 @@ def _parse_multpl_cape(
                 "raw_date_string": raw_date,
             },
         })
-    rows.sort(key=lambda r: r["ts"])  # emit ASC
-    return rows, dropped_source
+    rows.sort(key=lambda r: r["ts"])  # ASC
+
+    if not rows and fatal_on_empty:
+        raise RuntimeError(
+            f"multpl CAPE: zero rows in requested window "
+            f"(start={start!r}, dropped_policy={dropped_policy})"
+        )
+
+    return FetchResult(rows, dropped_source, dropped_policy)
 
 
 def fetch_shiller_cape(
     *,
     start: str | None = None,
+    fatal_on_empty: bool = True,
     _fetch=None,
     _retry_wait_s: float = _RETRY_WAIT_S,
-) -> tuple[list[dict], int]:
+) -> FetchResult:
     """Scrape the Shiller CAPE monthly series from multpl.com.
 
     Transient failures (HTTP non-200 incl. 429, or a network/timeout
-    exception) get **one** retry after ``_retry_wait_s``; if the second
-    attempt also fails we emit a ``macro_fetch_error`` event and raise
-    ``_AlreadyLogged``. Parse/validation failures (see
-    :func:`_parse_multpl_cape`) are deterministic — they propagate
-    immediately as ``RuntimeError``, no retry. ``_fetch`` is a test seam.
+    exception) get **one** retry after ``_retry_wait_s``; on exhaustion
+    we emit ``macro_fetch_error`` and raise ``_AlreadyLogged``.
+    Parse/validation failures from :func:`_parse_multpl_cape` are
+    deterministic and propagate as ``RuntimeError``. ``fatal_on_empty``
+    is forwarded to the parser so daily-mode empty windows aren't fatal.
     """
     fetch = _fetch or _http_get_text
     last_status: int | None = None
@@ -230,13 +272,14 @@ def fetch_shiller_cape(
     for attempt in (1, 2):
         try:
             status, text = fetch(MULTPL_CAPE_URL)
-        except Exception as e:  # network/timeout — transient
+        except Exception as e:
             last_status, last_detail = None, f"{type(e).__name__}: {e}"
         else:
             if status == 200:
-                # Deterministic from here: parse errors propagate (no retry).
                 scraped_at = datetime.now(timezone.utc).isoformat()
-                return _parse_multpl_cape(text, scraped_at, start=start)
+                return _parse_multpl_cape(
+                    text, scraped_at, start=start, fatal_on_empty=fatal_on_empty,
+                )
             last_status, last_detail = status, f"HTTP {status}"
 
         if attempt == 1:
@@ -282,20 +325,24 @@ def _parse_fred_observations(
     series_id: str,
     scraped_at: str,
     start: str | None = None,
+    fatal_on_empty: bool = True,
     value_range: tuple[float, float] | None = None,
-) -> tuple[list[dict], int]:
+) -> FetchResult:
     """Parse a FRED ``/fred/series/observations`` response.
 
-    Per the FRED contract, ``value`` arrives as a STRING and ``"."`` is the
-    sentinel for missing observations (weekends, holidays, gaps). Those
-    are filtered out and counted in ``dropped_source``. Rows come out
-    ts-ASC, tagged with point-in-time metadata
-    (``realtime_start``/``realtime_end``) which is the field that makes
-    FRED-based backtests honest.
+    Drop-counter discipline:
+      * ``dropped_source`` += 1 for FRED's missing-observation sentinel
+        ``"."``, empty value, non-numeric value, or empty date.
+      * ``dropped_policy`` = 0 (FRED has no policy filtering — every
+        well-formed numeric row is persisted as-is).
 
-    Defensive (raises ``RuntimeError``, nothing inserted): payload missing
-    ``observations``, no numeric rows after filtering, or the most-recent
-    value outside ``value_range``.
+    Fatality discipline:
+      * Always raises ``RuntimeError`` for hard layout / contract issues
+        (missing ``observations`` key, not-a-list, latest value out of
+        range). These signal upstream regression, not empty data.
+      * "No numeric rows after filter" raises only when
+        ``fatal_on_empty=True``; daily mode passes ``False`` so a
+        weekend/holiday window simply yields an empty result.
     """
     if not isinstance(payload, dict) or "observations" not in payload:
         raise RuntimeError(
@@ -312,7 +359,7 @@ def _parse_fred_observations(
     dropped_source = 0
     for o in obs:
         raw_value = (o.get("value") or "").strip()
-        if raw_value in (".", ""):     # FRED sentinel + empty -> drop
+        if raw_value in (".", ""):
             dropped_source += 1
             continue
         try:
@@ -339,10 +386,12 @@ def _parse_fred_observations(
         })
 
     if not rows:
-        raise RuntimeError(
-            f"FRED {series_id}: zero numeric observations after filter "
-            f"(dropped_source={dropped_source})"
-        )
+        if fatal_on_empty:
+            raise RuntimeError(
+                f"FRED {series_id}: zero numeric observations after filter "
+                f"(dropped_source={dropped_source})"
+            )
+        return FetchResult([], dropped_source, 0)
 
     rows.sort(key=lambda r: r["ts"])  # ASC
     latest = rows[-1]
@@ -351,27 +400,29 @@ def _parse_fred_observations(
             f"FRED {series_id}: latest value {latest['value']} ({latest['ts']}) "
             f"outside sane range [{lo}, {hi}]"
         )
-    return rows, dropped_source
+    return FetchResult(rows, dropped_source, 0)
 
 
 def fetch_fred_series(
     indicator: str,
     *,
     start: str | None = None,
+    fatal_on_empty: bool = True,
     _fetch=None,
     _retry_wait_s: float = _RETRY_WAIT_S,
     _api_key: str | None = None,
-) -> tuple[list[dict], int]:
+) -> FetchResult:
     """Fetch a FRED daily series (vix, hy_oas, sp500_close, tnx_yield).
 
     Behaviour:
-      * HTTP 200      -> parse + return (rows, dropped_source).
-      * HTTP 401      -> NO retry (invalid api_key is deterministic);
-                          emit ``macro_fetch_error`` + raise ``_AlreadyLogged``.
-      * HTTP non-200 or network exception -> ONE retry after
-        ``_retry_wait_s``; on second failure emit ``macro_fetch_error`` +
-        raise ``_AlreadyLogged``.
-      * Parse / validation failure -> raise ``RuntimeError`` (orchestrator emits).
+      * HTTP 200      -> parse + return ``FetchResult``.
+      * HTTP 401      -> NO retry (auth is deterministic); 1
+                          ``macro_fetch_error`` + raise ``_AlreadyLogged``.
+      * HTTP non-200 / network exception -> ONE retry after
+        ``_retry_wait_s``; on exhaustion 1 ``macro_fetch_error`` + raise
+        ``_AlreadyLogged``.
+      * Parse / validation failure -> raise ``RuntimeError`` (orchestrator
+        emits ``macro_fetch_error``).
 
     Security: ``api_key`` is read from ``$FRED_API_KEY`` (or ``_api_key``
     for tests) and NEVER appears in any emitted event — error ``detail``
@@ -413,9 +464,9 @@ def fetch_fred_series(
                 return _parse_fred_observations(
                     payload, indicator=indicator, series_id=series_id,
                     scraped_at=scraped_at, start=start,
+                    fatal_on_empty=fatal_on_empty,
                 )
             if status == 401:
-                # Auth failure is deterministic — re-trying just wastes a request.
                 log_event(
                     "macro_fetch_error",
                     indicator=indicator,
@@ -464,37 +515,69 @@ _FETCHERS = {
 # Orchestration -- populated in step 3d.
 # ---------------------------------------------------------------------------
 
-def run_all(*, start: str | None = None) -> dict:
-    """Run every fetcher in :data:`_FETCHERS`, upsert results idempotently,
-    emit the structured events agreed at PR #69 (P3 observability).
+def run_all(
+    *,
+    mode: str = MODE_DAILY,
+    start: str | None = None,
+    lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
+) -> dict:
+    """Run every fetcher in :data:`_FETCHERS`, upsert idempotently, emit
+    the structured events agreed at PR #69.
 
-    Per-indicator on success::
+    Modes
+    -----
+    ``mode="daily"`` (default, used by the CronJob):
+        * ``fatal_on_empty=False`` — an empty window is a warning, not a
+          failure (e.g. weekend FRED days, monthly CAPE between releases).
+        * When ``start`` is not given, defaults to ``today - lookback_days``.
+        * Exit code 0 unless **every** indicator errored.
+    ``mode="backfill"`` (used by ``jobs/macro_backfill.py``):
+        * ``fatal_on_empty=True`` — empty result is a real failure since
+          full history was requested.
+        * ``start`` is forwarded as-is (``None`` -> full history).
+
+    Per-indicator events
+    --------------------
+    On success::
 
         {"event": "macro_fetch", "indicator": ..., "rows_inserted": N,
-         "rows_skipped": N}   # rows_skipped = upsert duplicates + source drops
+         "rows_skipped": N}      # = upsert duplicates + dropped_source + dropped_policy
 
-    Per-indicator on failure: exactly one ``macro_fetch_error`` event — the
-    fetcher emits it directly for HTTP/auth paths, or the orchestrator
-    emits it here for parse/validation/unexpected exceptions.
+    On failure: exactly one ``macro_fetch_error`` event — the fetcher
+    emits it directly for HTTP/auth paths, or the orchestrator emits it
+    here for parse/validation/unexpected exceptions (gated by
+    ``_AlreadyLogged`` so we never double-log).
 
-    End of run::
+    Run summary
+    -----------
+    Final event::
 
-        {"event": "macro_fetcher_run", "duration_ms": ...,
-         "by_indicator": {...with breakdown per indicator...},
-         "totals": {"inserted", "skipped", "dropped_source", "failed"}}
-
-    Returns the same payload as a dict for callers that want it
-    programmatically (e.g. backfill script for its tail report).
+        {"event": "macro_fetcher_run", "mode": ..., "window_start": ...,
+         "duration_ms": ...,
+         "by_indicator": {ind: {fetched, inserted, skipped_dup,
+                                 dropped_source, dropped_policy} | {error}},
+         "totals": {inserted, skipped, dropped_source, dropped_policy, failed}}
     """
+    if mode not in (MODE_DAILY, MODE_BACKFILL):
+        raise ValueError(f"unknown mode {mode!r}; use 'daily' or 'backfill'")
+    fatal_on_empty = (mode == MODE_BACKFILL)
+    if mode == MODE_DAILY and start is None:
+        lb = max(5, int(lookback_days))
+        start = (datetime.now(timezone.utc) - timedelta(days=lb)).strftime("%Y-%m-%d")
+
     t0 = time.perf_counter()
     by_indicator: dict[str, dict] = {}
-    totals = {"inserted": 0, "skipped": 0, "dropped_source": 0, "failed": 0}
+    totals = {
+        "inserted": 0, "skipped": 0,
+        "dropped_source": 0, "dropped_policy": 0, "failed": 0,
+    }
 
     for indicator, fetcher in _FETCHERS.items():
         try:
-            rows, dropped = fetcher(start=start)
+            result = fetcher(start=start, fatal_on_empty=fatal_on_empty)
+            rows = result.rows
             inserted, dup_skipped = mr.upsert_observations(indicator, rows)
-            rows_skipped = dup_skipped + dropped
+            rows_skipped = dup_skipped + result.dropped_source + result.dropped_policy
             log_event(
                 "macro_fetch",
                 indicator=indicator,
@@ -505,18 +588,18 @@ def run_all(*, start: str | None = None) -> dict:
                 "fetched": len(rows),
                 "inserted": inserted,
                 "skipped_dup": dup_skipped,
-                "dropped_source": dropped,
+                "dropped_source": result.dropped_source,
+                "dropped_policy": result.dropped_policy,
             }
             totals["inserted"] += inserted
             totals["skipped"] += dup_skipped
-            totals["dropped_source"] += dropped
+            totals["dropped_source"] += result.dropped_source
+            totals["dropped_policy"] += result.dropped_policy
         except _AlreadyLogged as e:
-            # Fetcher already emitted macro_fetch_error; just tally.
             by_indicator[indicator] = {"error": str(e)}
             totals["failed"] += 1
             logger.warning("%s fetcher failed (logged): %s", indicator, e)
         except Exception as e:
-            # Parse / validation / unexpected — orchestrator emits.
             log_event(
                 "macro_fetch_error",
                 indicator=indicator,
@@ -530,11 +613,15 @@ def run_all(*, start: str | None = None) -> dict:
     duration_ms = int((time.perf_counter() - t0) * 1000)
     log_event(
         "macro_fetcher_run",
+        mode=mode,
+        window_start=start,
         duration_ms=duration_ms,
         by_indicator=by_indicator,
         totals=totals,
     )
     return {
+        "mode": mode,
+        "window_start": start,
         "duration_ms": duration_ms,
         "by_indicator": by_indicator,
         "totals": totals,
@@ -542,4 +629,10 @@ def run_all(*, start: str | None = None) -> dict:
 
 
 if __name__ == "__main__":
-    run_all()
+    # Daily mode is the default CronJob entry. Exit code:
+    #   0 -> at least one indicator succeeded (partial failure tolerated)
+    #   1 -> every indicator failed (the run is useless to the operator)
+    _summary = run_all(mode=MODE_DAILY)
+    _n_total = len(_FETCHERS)
+    _n_failed = _summary["totals"]["failed"]
+    sys.exit(0 if _n_failed < _n_total else 1)
