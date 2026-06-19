@@ -215,3 +215,23 @@ def count_by_indicator() -> dict[str, int]:
         "GROUP BY indicator",
     ).fetchall()
     return {r["indicator"]: r["n"] for r in rows}
+
+
+def get_ts_range(indicator: str) -> dict | None:
+    """Return ``{first_ts, last_ts, count}`` for an indicator, or ``None``
+    when there are no observations. Used by the backfill end-of-run
+    report to show the actual series coverage."""
+    if indicator not in INDICATORS:
+        raise ValueError(f"unknown indicator {indicator!r}")
+    row = _db().execute(
+        "SELECT MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS n "
+        "FROM macro_indicators WHERE indicator = ?",
+        (indicator,),
+    ).fetchone()
+    if row is None or row["n"] == 0:
+        return None
+    return {
+        "first_ts": row["first_ts"],
+        "last_ts": row["last_ts"],
+        "count": row["n"],
+    }
