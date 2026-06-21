@@ -568,7 +568,7 @@ def run_all(
     t0 = time.perf_counter()
     by_indicator: dict[str, dict] = {}
     totals = {
-        "inserted": 0, "skipped": 0,
+        "inserted": 0, "updated": 0, "skipped": 0,
         "dropped_source": 0, "dropped_policy": 0, "failed": 0,
     }
 
@@ -576,22 +576,30 @@ def run_all(
         try:
             result = fetcher(start=start, fatal_on_empty=fatal_on_empty)
             rows = result.rows
-            inserted, dup_skipped = mr.upsert_observations(indicator, rows)
+            # Per-indicator write semantics are decided by the catalog
+            # entry (cape_shiller -> update_on_change; FRED -> ignore).
+            ups = mr.upsert_observations(indicator, rows)
+            inserted = ups["inserted"]
+            updated = ups["updated"]
+            dup_skipped = ups["skipped_dup"]
             rows_skipped = dup_skipped + result.dropped_source + result.dropped_policy
             log_event(
                 "macro_fetch",
                 indicator=indicator,
                 rows_inserted=inserted,
+                rows_updated=updated,
                 rows_skipped=rows_skipped,
             )
             by_indicator[indicator] = {
                 "fetched": len(rows),
                 "inserted": inserted,
+                "updated": updated,
                 "skipped_dup": dup_skipped,
                 "dropped_source": result.dropped_source,
                 "dropped_policy": result.dropped_policy,
             }
             totals["inserted"] += inserted
+            totals["updated"] += updated
             totals["skipped"] += dup_skipped
             totals["dropped_source"] += result.dropped_source
             totals["dropped_policy"] += result.dropped_policy

@@ -102,11 +102,19 @@ def _preflight(stream=None) -> dict[str, int]:
 
 def _format_report(summary: dict, ranges: dict[str, dict | None]) -> str:
     """Build the end-of-run human report from the orchestrator summary
-    and the per-indicator (first_ts, last_ts) ranges from the DB."""
+    and the per-indicator (first_ts, last_ts) ranges from the DB.
+
+    Carries the ``updated`` counter introduced for the CAPE
+    ``update_on_change`` write path so the operator can tell apart
+    "row already there, identical value" (skipped) from "row already
+    there, value restated upstream" (updated). For FRED indicators
+    this counter is always 0 — they use ``on_conflict="ignore"``.
+    """
     totals = summary["totals"]
     lines = [
         f"Indicators: {len(mr.INDICATORS)}. "
         f"Inserted: {totals['inserted']}. "
+        f"Updated: {totals.get('updated', 0)}. "
         f"Skipped: {totals['skipped']}. "
         f"Failed: {totals['failed']}.",
         "",
@@ -135,6 +143,7 @@ def _format_report(summary: dict, ranges: dict[str, dict | None]) -> str:
                 f"  {ind:14}: {rng['count']} rows in DB, "
                 f"{rng['first_ts']} → {rng['last_ts']}, "
                 f"inserted={b.get('inserted', 0)}, "
+                f"updated={b.get('updated', 0)}, "
                 f"skipped={b.get('skipped_dup', 0)}{extra_str}"
             )
     # SP500 cap is documented inline so the operator running kubectl exec

@@ -27,6 +27,11 @@ INDICATORS: dict[str, dict] = {
         "id": "cape_shiller",
         "source": "shiller_yale",
         "frequency": "monthly",
+        # multpl.com sometimes restates recent CAPE values when the
+        # underlying earnings/CPI inputs are revised. Use update-on-change
+        # so a restated month overwrites the prior write while unchanged
+        # rows stay no-op (idempotency preserved).
+        "on_conflict": "update_on_change",
         "xlsx_urls": (
             "http://www.econ.yale.edu/~shiller/data/ie_data.xls",
             "https://shillerdata.com/data/ie_data.xls",
@@ -37,24 +42,31 @@ INDICATORS: dict[str, dict] = {
         "id": "vix",
         "source": "fred",
         "frequency": "daily",
+        # FRED values are point-in-time (carry their own realtime_start/
+        # realtime_end); revisions create new rows, never restate the
+        # primary key. Keep the simple ignore-on-conflict path.
+        "on_conflict": "ignore",
         "series_id": "VIXCLS",
     },
     "hy_oas": {
         "id": "hy_oas",
         "source": "fred",
         "frequency": "daily",
+        "on_conflict": "ignore",
         "series_id": "BAMLH0A0HYM2",
     },
     "sp500_close": {
         "id": "sp500_close",
         "source": "fred",
         "frequency": "daily",
+        "on_conflict": "ignore",
         "series_id": "SP500",
     },
     "tnx_yield": {
         "id": "tnx_yield",
         "source": "fred",
         "frequency": "daily",
+        "on_conflict": "ignore",
         "series_id": "DGS10",
     },
 }
@@ -74,31 +86,55 @@ def list_indicators() -> list[dict]:
 # Write path
 # ---------------------------------------------------------------------------
 
+_ON_CONFLICT_MODES = ("ignore", "update_on_change")
+
+
 def upsert_observations(
     indicator: str,
     rows: list[dict],
     *,
     source: str | None = None,
     fetched_at: str | None = None,
-) -> tuple[int, int]:
-    """Insert observations idempotently via INSERT OR IGNORE.
+    on_conflict: str | None = None,
+) -> dict:
+    """Upsert observations and return ``{inserted, updated, skipped_dup}``.
 
     ``rows`` is a list of ``{"ts": "...", "value": float, "metadata": {...}|None}``.
-    ``ts`` is the observation date (ISO ``YYYY-MM-DD`` or full ISO). ``source``
-    defaults to the catalog entry. ``fetched_at`` defaults to ``now()`` and is
-    shared by all rows of this call. Returns ``(inserted, skipped)``.
+    ``ts`` is the observation date (ISO ``YYYY-MM-DD`` or full ISO).
+    ``source`` defaults to the catalog entry. ``fetched_at`` defaults to
+    ``now()`` and is shared by all rows of this call.
+
+    ``on_conflict`` selects the write semantics; defaults to whatever the
+    catalog entry says (``INDICATORS[indicator]["on_conflict"]``), so
+    callers normally don't have to think about it:
+
+      * ``"ignore"`` (FRED) — pure ``INSERT OR IGNORE``. New ts → insert;
+        existing ts → ``skipped_dup``, never re-written. Returned
+        ``updated`` is always ``0``.
+      * ``"update_on_change"`` (CAPE) — ``INSERT OR IGNORE``; if that
+        was a no-op, retry as ``UPDATE ... WHERE value != excluded.value``
+        so a restated month overwrites the prior write but unchanged
+        rows stay no-op. Metadata only moves when the value moves —
+        rows whose value is unchanged keep their original ``metadata``
+        (and therefore the original ``scraped_at`` / ``fetched_at``),
+        which makes the "ran twice → 0 writes" idempotency proof hold.
     """
     if indicator not in INDICATORS:
         raise ValueError(f"unknown indicator {indicator!r}")
+    if on_conflict is None:
+        on_conflict = INDICATORS[indicator].get("on_conflict", "ignore")
+    if on_conflict not in _ON_CONFLICT_MODES:
+        raise ValueError(f"unknown on_conflict mode {on_conflict!r}")
     if source is None:
         source = INDICATORS[indicator]["source"]
     if fetched_at is None:
         fetched_at = datetime.now(timezone.utc).isoformat()
     if not rows:
-        return (0, 0)
+        return {"inserted": 0, "updated": 0, "skipped_dup": 0}
 
     inserted = 0
-    skipped = 0
+    updated = 0
+    skipped_dup = 0
     conn = _db()
     with conn:
         for row in rows:
@@ -117,9 +153,24 @@ def upsert_observations(
             )
             if cur.rowcount:
                 inserted += 1
-            else:
-                skipped += 1
-    return inserted, skipped
+                continue
+            # Row exists. In ignore mode, that's the end of it. In
+            # update_on_change mode, the UPDATE is gated on
+            # ``value != ?`` so unchanged rows return rowcount=0
+            # (no churn, no metadata rewrite) and changed rows
+            # return rowcount=1 (counted as 'updated').
+            if on_conflict == "update_on_change":
+                cur2 = conn.execute(
+                    "UPDATE macro_indicators "
+                    "SET value = ?, metadata = ? "
+                    "WHERE indicator = ? AND ts = ? AND value != ?",
+                    (value, md_json, indicator, ts, value),
+                )
+                if cur2.rowcount:
+                    updated += 1
+                    continue
+            skipped_dup += 1
+    return {"inserted": inserted, "updated": updated, "skipped_dup": skipped_dup}
 
 
 # ---------------------------------------------------------------------------
