@@ -26,7 +26,7 @@ INDICATORS: dict[str, dict] = {
     "cape_shiller": {
         "id": "cape_shiller",
         "source": "shiller_yale",
-        "frequency": "monthly",
+        "cadence": "monthly",
         # multpl.com sometimes restates recent CAPE values when the
         # underlying earnings/CPI inputs are revised. Use update-on-change
         # so a restated month overwrites the prior write while unchanged
@@ -41,7 +41,7 @@ INDICATORS: dict[str, dict] = {
     "vix": {
         "id": "vix",
         "source": "fred",
-        "frequency": "daily",
+        "cadence": "daily",
         # FRED values are point-in-time (carry their own realtime_start/
         # realtime_end); revisions create new rows, never restate the
         # primary key. Keep the simple ignore-on-conflict path.
@@ -51,35 +51,60 @@ INDICATORS: dict[str, dict] = {
     "hy_oas": {
         "id": "hy_oas",
         "source": "fred",
-        "frequency": "daily",
+        "cadence": "daily",
         "on_conflict": "ignore",
         "series_id": "BAMLH0A0HYM2",
     },
     "sp500_close": {
         "id": "sp500_close",
         "source": "fred",
-        "frequency": "daily",
+        "cadence": "daily",
         "on_conflict": "ignore",
         "series_id": "SP500",
     },
     "tnx_yield": {
         "id": "tnx_yield",
         "source": "fred",
-        "frequency": "daily",
+        "cadence": "daily",
         "on_conflict": "ignore",
         "series_id": "DGS10",
     },
 }
 
 
-def list_indicators() -> list[dict]:
-    """Public-facing catalog (no URLs, no series_ids) for the
-    ``GET /api/macro/indicators`` endpoint. Returns a list of
-    ``{id, source, frequency}`` dicts ordered by insertion order."""
-    return [
-        {"id": v["id"], "source": v["source"], "frequency": v["frequency"]}
-        for v in INDICATORS.values()
-    ]
+# ---------------------------------------------------------------------------
+# Staleness thresholds — tunable. ``daily`` indicators source from FRED,
+# which publishes on US trading days; 4 business days covers a long weekend
+# plus the typical FRED publication lag. ``monthly`` thresholds tolerate a
+# little slack around the multpl.com refresh cadence (~mid-month). Both
+# values are tweakable here without touching callers.
+# ---------------------------------------------------------------------------
+
+STALE_THRESHOLD_DAILY_BUSINESS_DAYS = 4
+STALE_THRESHOLD_MONTHLY_CALENDAR_DAYS = 40
+
+
+def get_indicators_catalog() -> list[dict]:
+    """Catalog + DB coverage for ``GET /api/macro/indicators``.
+
+    Returns a list of ``{id, source, cadence, count, first_ts, last_ts}``,
+    one per catalog entry. Indicators with no rows yet report ``count=0``
+    and ``first_ts/last_ts = None``. Internal-only catalog keys
+    (``xlsx_urls``, ``series_id``, ``on_conflict``, ``column``) are NOT
+    exposed.
+    """
+    out: list[dict] = []
+    for ind_id, cfg in INDICATORS.items():
+        rng = get_ts_range(ind_id)
+        out.append({
+            "id": ind_id,
+            "source": cfg["source"],
+            "cadence": cfg["cadence"],
+            "count": rng["count"] if rng else 0,
+            "first_ts": rng["first_ts"] if rng else None,
+            "last_ts": rng["last_ts"] if rng else None,
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -286,3 +311,93 @@ def get_ts_range(indicator: str) -> dict | None:
         "last_ts": row["last_ts"],
         "count": row["n"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Freshness — request-time only (never persisted). Used by /api/macro/latest
+# ---------------------------------------------------------------------------
+
+def _business_days_between(d1, d2) -> int:
+    """Number of business days (Mon-Fri) strictly after ``d1`` up to and
+    including ``d2``. Returns 0 when ``d2 <= d1``.
+
+    Calendar-day accounting is too noisy for FRED's publication cadence
+    (US trading days only), so the daily-cadence staleness threshold
+    runs through this helper. We don't subtract individual holidays —
+    too brittle, the operator tunes the threshold instead.
+    """
+    if d2 <= d1:
+        return 0
+    from datetime import timedelta
+    count = 0
+    cur = d1 + timedelta(days=1)
+    while cur <= d2:
+        if cur.weekday() < 5:    # Mon-Fri
+            count += 1
+        cur += timedelta(days=1)
+    return count
+
+
+def get_freshness(*, now_utc=None) -> list[dict]:
+    """Per-indicator freshness report. Powers ``GET /api/macro/latest``.
+
+    For each catalog entry, returns::
+
+        {
+          "indicator":      "<id>",
+          "cadence":        "daily" | "monthly",
+          "latest_ts":      "YYYY-MM-DD" | None,
+          "value":          float | None,
+          "no_data":        True iff there is no row at all,
+          "age_days":       business days for daily / calendar days for monthly,
+          "threshold_days": STALE_THRESHOLD_*  (the comparison threshold),
+          "is_stale":       True iff age_days > threshold_days OR no_data,
+        }
+
+    ``now_utc`` is a test seam — production callers leave it ``None`` and
+    we read ``datetime.now(timezone.utc)`` at request time. Staleness is
+    computed here, never persisted.
+    """
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    today = now_utc.date()
+
+    latest_all = get_latest_all()
+    out: list[dict] = []
+    for ind_id, cfg in INDICATORS.items():
+        cadence = cfg["cadence"]
+        threshold = (
+            STALE_THRESHOLD_DAILY_BUSINESS_DAYS if cadence == "daily"
+            else STALE_THRESHOLD_MONTHLY_CALENDAR_DAYS
+        )
+        latest = latest_all.get(ind_id)
+        if latest is None:
+            out.append({
+                "indicator": ind_id,
+                "cadence": cadence,
+                "latest_ts": None,
+                "value": None,
+                "no_data": True,
+                "age_days": None,
+                "threshold_days": threshold,
+                "is_stale": True,
+            })
+            continue
+        # Observations are stored as YYYY-MM-DD strings; slice to be safe
+        # against any caller that ever stored a fuller ISO datetime.
+        latest_date = datetime.fromisoformat(latest["ts"][:10]).date()
+        if cadence == "daily":
+            age = _business_days_between(latest_date, today)
+        else:
+            age = (today - latest_date).days
+        out.append({
+            "indicator": ind_id,
+            "cadence": cadence,
+            "latest_ts": latest["ts"],
+            "value": latest["value"],
+            "no_data": False,
+            "age_days": age,
+            "threshold_days": threshold,
+            "is_stale": age > threshold,
+        })
+    return out
