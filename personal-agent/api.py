@@ -853,6 +853,68 @@ async def bubble_scores():
 
 
 # ---------------------------------------------------------------------------
+# Macro Indicators (Onda 12 Sprint 1, Camada B)
+# ---------------------------------------------------------------------------
+# Read-only surface over the ``macro_indicators`` SQLite table populated by
+# the daily ``jobs/macro_fetcher.py`` CronJob. Every line of SQL stays
+# behind ``macro_repository`` — no raw ``db.execute`` here, by design, so
+# a future Postgres/TimescaleDB migration is a single-module diff.
+
+@app.get("/api/macro/indicators")
+async def get_macro_indicators():
+    """Catalog + DB coverage per indicator.
+
+    Returns ``{"indicators": [{id, source, cadence, count, first_ts,
+    last_ts}, ...]}``. Indicators with no data yet report
+    ``count=0, first_ts=null, last_ts=null``.
+    """
+    import macro_repository as mr_local
+    return {"indicators": mr_local.get_indicators_catalog()}
+
+
+@app.get("/api/macro/timeseries")
+async def get_macro_timeseries(
+    indicator: str = Query(..., description="Indicator id (e.g. vix, cape_shiller)"),
+    from_: str = Query("", alias="from", description="Inclusive ISO start date"),
+    to: str = Query("", description="Inclusive ISO end date"),
+):
+    """Return ``[{ts, value}]`` ordered ASC for an indicator.
+
+    Errors:
+      * unknown indicator id -> 404
+      * malformed ``from`` / ``to`` (not parseable as ISO) -> 400
+    """
+    import macro_repository as mr_local
+    if indicator not in mr_local.INDICATORS:
+        raise HTTPException(404, f"unknown indicator {indicator!r}")
+    for label, value in (("from", from_), ("to", to)):
+        if not value:
+            continue
+        try:
+            datetime.fromisoformat(value)
+        except ValueError:
+            raise HTTPException(400, f"invalid {label} date: {value!r}")
+    return mr_local.get_timeseries(
+        indicator, start=from_ or None, end=to or None, limit=10000,
+    )
+
+
+@app.get("/api/macro/latest")
+async def get_macro_latest():
+    """Per-indicator freshness summary.
+
+    Returns ``{"indicators": [<freshness row>, ...]}`` where each row is
+    ``{indicator, cadence, latest_ts, value, no_data, age_days,
+    threshold_days, is_stale}``. ``age_days`` units depend on cadence
+    (business days for daily, calendar days for monthly) so the
+    consumer's ``age_days > threshold_days`` check matches ``is_stale``.
+    Computed at request time, never persisted.
+    """
+    import macro_repository as mr_local
+    return {"indicators": mr_local.get_freshness()}
+
+
+# ---------------------------------------------------------------------------
 # Entry point for standalone testing
 # ---------------------------------------------------------------------------
 
