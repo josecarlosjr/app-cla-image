@@ -35,11 +35,16 @@ Sources
 -------
 * CAPE (``cape_shiller``)  : multpl scrape, 1871-> (live row filtered).
 * VIX  (``vix``)            : FRED VIXCLS, 1990->.
-* HY OAS (``hy_oas``)        : FRED BAMLH0A0HYM2, ~1997->.
+* HY OAS (``hy_oas``)        : FRED BAMLH0A0HYM2. **Capped to a rolling
+  ~3-year window** by a FRED licensing change around April 2026 that
+  applied to the entire ICE BofA family. The underlying series starts
+  1996-12-31 but FRED no longer serves the pre-cap history. Long-history
+  HY OAS needs a different vendor (ICE direct, Bloomberg) — operator
+  decision at PR review, no auto-fallback.
 * SP500 (``sp500_close``)    : FRED SP500. **Capped to ~10 years of
-  daily history by FRED's licensing terms** — backfill will fetch
-  what is available with no auto-fallback to ^GSPC or any other source.
-  Long-history SP500 is a separate decision (see PR description).
+  daily history** by S&P / Dow Jones licensing — backfill fetches what
+  is available with no auto-fallback to ^GSPC, Shiller's price column,
+  or any other source. Long-history SP500 is an operator decision.
 * 10y yield (``tnx_yield``) : FRED DGS10, 1962->.
 
 Reports
@@ -146,13 +151,15 @@ def _format_report(summary: dict, ranges: dict[str, dict | None]) -> str:
                 f"updated={b.get('updated', 0)}, "
                 f"skipped={b.get('skipped_dup', 0)}{extra_str}"
             )
-    # SP500 cap is documented inline so the operator running kubectl exec
-    # sees it without having to dig in the module docstring.
+    # FRED history caps documented inline so the operator running
+    # kubectl exec sees them without having to dig in module docstrings.
     lines += [
         "",
-        "Note: sp500_close is capped to ~10y by FRED's licensing terms.",
-        "      Longer history requires a different source (^GSPC / Shiller),",
-        "      decided at PR review — no auto-fallback here.",
+        "FRED history caps (no auto-fallback — operator decisions at review):",
+        "  sp500_close  : ~10y, S&P / Dow Jones licensing (alts: ^GSPC, Shiller)",
+        "  hy_oas       : rolling ~3y, ICE BofA family change ~April 2026",
+        "                  (alts: ICE direct, Bloomberg)",
+        "  VIX / DGS10  : unaffected — full history.",
     ]
     return "\n".join(lines)
 

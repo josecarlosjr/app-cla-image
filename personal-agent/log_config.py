@@ -47,6 +47,13 @@ def setup_logging() -> None:
     stream_handler.setFormatter(fmt)
     root.addHandler(stream_handler)
 
+    # httpx logs one INFO line per request ("HTTP Request: GET ... 200 OK").
+    # At ~70 RSS feeds + per-indicator macro fetches that drowns the real
+    # logs and bloats the rotating file. Lift to WARNING so only failures
+    # surface; httpcore (its transport) is noisy at DEBUG, pinned too.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
 
 # ---------------------------------------------------------------------------
 # Structured event logging (Onda 11 opt #8 — observabilidade P3)
