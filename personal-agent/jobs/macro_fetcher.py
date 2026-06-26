@@ -91,10 +91,24 @@ _CAPE_REQUIRE_YEAR = "2026"        # at least one current-year row must survive
 # ---------------------------------------------------------------------------
 # FRED — VIX, HY_OAS, SP500, TNX. Single parameterised pattern.
 #
-# ⚠️ SP500 caveat: per the FRED licensing terms, the SP500 series is
-#    capped to ~10 years of daily history. Longer history would require
-#    a different source (e.g. ^GSPC via yfinance or Shiller's own price
-#    column). We do NOT auto-fallback — the operator decides at PR review.
+# ⚠️ History caps (FRED-side, NOT bugs in our code — see macro_repository
+#    catalog comments for the exact phrasing on each entry):
+#
+#    SP500 (S&P / Dow Jones licensing) — capped at ~10 years of daily
+#       history. Long-history alternatives: ^GSPC via yfinance, or
+#       Shiller's SP500 price column on multpl.
+#
+#    HY_OAS / any ICE BofA series — a FRED licensing change around
+#       April 2026 capped the entire ICE BofA family to a rolling ~3-year
+#       window. HY_OAS is currently the only ICE BofA series we use; the
+#       underlying series starts 1996-12-31 but FRED returns only the
+#       trailing ~3y. Long-history alternatives: ICE direct, Bloomberg.
+#
+#    VIX (CBOE → FRED) and TNX/DGS10 (Treasury → FRED) are unaffected;
+#    both return their full series (1990->, 1962-> respectively).
+#
+#    No auto-fallback for either cap — alternatives are operator decisions
+#    at PR review (not silent vendor swaps).
 # ---------------------------------------------------------------------------
 
 _FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
@@ -428,7 +442,9 @@ def fetch_fred_series(
     for tests) and NEVER appears in any emitted event — error ``detail``
     strings are routed through :func:`_redact`.
 
-    SP500 caveat: see module docstring; FRED returns only ~10y of SP500.
+    History caps: see module docstring. FRED returns only ~10y of SP500
+    (S&P licensing) and only ~3y of any ICE BofA series including HY_OAS
+    (April 2026 licensing change). VIX / DGS10 are unaffected.
     """
     cfg = mr.INDICATORS.get(indicator)
     if not cfg or cfg.get("source") != "fred":

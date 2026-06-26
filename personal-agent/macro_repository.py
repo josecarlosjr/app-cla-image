@@ -54,6 +54,13 @@ INDICATORS: dict[str, dict] = {
         "cadence": "daily",
         "on_conflict": "ignore",
         "series_id": "BAMLH0A0HYM2",
+        # History cap: a FRED licensing change around April 2026 capped
+        # the entire ICE BofA family on FRED to a rolling ~3-year window.
+        # HY_OAS is currently the only ICE BofA series in our catalog;
+        # full history (the underlying series starts 1996-12-31) is NOT
+        # retrievable through this endpoint. No auto-fallback — a longer
+        # series requires a different vendor (ICE direct, Bloomberg) and
+        # is an explicit operator decision.
     },
     "sp500_close": {
         "id": "sp500_close",
@@ -61,6 +68,10 @@ INDICATORS: dict[str, dict] = {
         "cadence": "daily",
         "on_conflict": "ignore",
         "series_id": "SP500",
+        # History cap: S&P / Dow Jones licensing caps FRED's SP500
+        # series at ~10 years of daily history. Long-history alternatives
+        # (^GSPC via yfinance, or Shiller's own SP500 price column on
+        # multpl) are operator decisions — no auto-fallback.
     },
     "tnx_yield": {
         "id": "tnx_yield",
