@@ -74,14 +74,17 @@ INDICATORS: dict[str, dict] = {
 
 # ---------------------------------------------------------------------------
 # Staleness thresholds — tunable. ``daily`` indicators source from FRED,
-# which publishes on US trading days; 4 business days covers a long weekend
-# plus the typical FRED publication lag. ``monthly`` thresholds tolerate a
-# little slack around the multpl.com refresh cadence (~mid-month). Both
-# values are tweakable here without touching callers.
+# which publishes on US trading days; 6 business days covers a normal
+# weekly cadence (prior-Friday-to-this-Friday is 5 business days) plus
+# FRED's publication lag over a long weekend, without false positives.
+# ``monthly`` thresholds tolerate a little slack around the multpl.com
+# refresh cadence (~mid-month). Both values are tweakable here without
+# touching callers. Holidays are deliberately out of scope — tune the
+# threshold rather than maintaining a holiday calendar.
 # ---------------------------------------------------------------------------
 
-STALE_THRESHOLD_DAILY_BUSINESS_DAYS = 4
-STALE_THRESHOLD_MONTHLY_CALENDAR_DAYS = 40
+STALE_BUSINESS_DAYS_DAILY = 6
+STALE_CALENDAR_DAYS_MONTHLY = 40
 
 
 def get_indicators_catalog() -> list[dict]:
@@ -367,8 +370,8 @@ def get_freshness(*, now_utc=None) -> list[dict]:
     for ind_id, cfg in INDICATORS.items():
         cadence = cfg["cadence"]
         threshold = (
-            STALE_THRESHOLD_DAILY_BUSINESS_DAYS if cadence == "daily"
-            else STALE_THRESHOLD_MONTHLY_CALENDAR_DAYS
+            STALE_BUSINESS_DAYS_DAILY if cadence == "daily"
+            else STALE_CALENDAR_DAYS_MONTHLY
         )
         latest = latest_all.get(ind_id)
         if latest is None:
