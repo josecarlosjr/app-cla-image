@@ -313,23 +313,156 @@ Maximo 300 palavras.\
 
 
 # ---------------------------------------------------------------------------
+# Macro digest (Onda 12 Sprint 1 — B1).
+#
+# Minimal Telegram brief: current value + diff vs the immediately
+# preceding observation per indicator, plus a stale warning when the
+# upstream source has lagged. Reads from macro_indicators via
+# macro_repository (same SQLite path morning/evening already use), NOT
+# via /api/macro/latest — the digest container has DB access already,
+# and HTTPing localhost just to read the same DB is wasted work that
+# would add a runtime dependency on the API pod being up.
+#
+# Deterministic and LLM-free: numbers only, no interpretation. The
+# "vs prior_ts" framing (not "vs yesterday") is honest about which
+# point we compared against — survives weekends, holidays and FRED
+# lag without silent lies.
+# ---------------------------------------------------------------------------
+
+# Order is intentional: daily/volatile first (VIX vol → credit OAS →
+# equity → rates), then the slow-moving monthly CAPE at the bottom.
+_MACRO_ORDER = ("vix", "hy_oas", "sp500_close", "tnx_yield", "cape_shiller")
+
+_MACRO_LABELS = {
+    "vix":          ("VIX",     "{:.2f}"),
+    "hy_oas":       ("HY OAS",  "{:.2f}%"),
+    "sp500_close":  ("S&P 500", "{:.2f}"),
+    "tnx_yield":    ("10Y",     "{:.2f}%"),
+    "cape_shiller": ("CAPE",    "{:.2f}"),
+}
+
+
+def _short_date_pt(ts: str) -> str:
+    """ISO ``YYYY-MM-DD`` (or fuller ISO) -> ``DD/MM`` (PT convention)."""
+    return datetime.fromisoformat(ts[:10]).strftime("%d/%m")
+
+
+def _short_month_pt(ts: str) -> str:
+    """ISO ``YYYY-MM-DD`` -> ``<mmm>/<yyyy>`` with a 3-letter PT month."""
+    dt = datetime.fromisoformat(ts[:10])
+    return f"{_PT_MONTHS[dt.month - 1][:3]}/{dt.year}"
+
+
+def _gather_macro_data() -> dict:
+    """Pure read: per-indicator freshness + the latest 2 observations.
+
+    Returns ``{by_indicator: {ind: {freshness, recent}}, fred_latest_ts}``.
+    ``fred_latest_ts`` is the freshest *daily* ts (used for the header
+    date and the footer line); CAPE's monthly ts is intentionally
+    excluded from that aggregation — labelling the brief with a
+    4-week-old monthly ts as "latest FRED close" would be a lie.
+    """
+    import macro_repository as mr  # lazy: keep morning/evening import graph clean
+
+    freshness = {f["indicator"]: f for f in mr.get_freshness()}
+    by_indicator: dict[str, dict] = {}
+    daily_latest_ts: list[str] = []
+    for ind in _MACRO_ORDER:
+        f = freshness.get(ind, {})
+        recent = [] if f.get("no_data") else mr.get_recent(ind, n=2)
+        by_indicator[ind] = {"freshness": f, "recent": recent}
+        if recent and f.get("cadence") == "daily":
+            daily_latest_ts.append(recent[0]["ts"])
+    return {
+        "by_indicator": by_indicator,
+        "fred_latest_ts": max(daily_latest_ts) if daily_latest_ts else None,
+    }
+
+
+def _format_macro_message(data: dict) -> str:
+    """Render the Telegram body. Pure function of ``data`` so the same
+    builder can be exercised offline against fixture dicts."""
+    fred_ts = data["fred_latest_ts"]
+    if fred_ts:
+        header_dt = datetime.fromisoformat(fred_ts[:10])
+        header = f"*Macro - {header_dt.strftime('%d/%m/%Y')}*"
+    else:
+        header = "*Macro - sem dados*"
+
+    lines: list[str] = [header]
+    warnings: list[str] = []
+
+    for ind in _MACRO_ORDER:
+        b = data["by_indicator"][ind]
+        f = b["freshness"]
+        label, fmt = _MACRO_LABELS[ind]
+        recent = b["recent"]
+
+        if not recent:
+            lines.append(f"{label}: sem dados")
+            warnings.append(f"WARNING: {label} sem dados")
+            continue
+
+        latest = recent[0]
+        value_str = fmt.format(latest["value"])
+
+        # Monthly: label-only suffix (no daily-style diff — MoM deltas
+        # can come later as a separate framing decision).
+        if f.get("cadence") == "monthly":
+            suffix = f"(mensal, {_short_month_pt(latest['ts'])})"
+        elif len(recent) >= 2:
+            prior = recent[1]
+            diff = latest["value"] - prior["value"]
+            suffix = f"({diff:+.2f} vs {_short_date_pt(prior['ts'])})"
+        else:
+            suffix = "(sem observacao anterior)"
+
+        lines.append(f"{label}: {value_str} {suffix}")
+
+        if f.get("is_stale"):
+            age = f.get("age_days")
+            unit = "dias uteis" if f.get("cadence") == "daily" else "dias"
+            warnings.append(f"WARNING: {label} stale ha {age} {unit}")
+
+    if warnings:
+        lines.append("")
+        lines.extend(warnings)
+
+    lines.append("")
+    if fred_ts:
+        footer_dt = datetime.fromisoformat(fred_ts[:10])
+        lines.append(
+            f"Dados FRED: fecho de {footer_dt.strftime('%d/%m/%Y')}; "
+            "lag tipico 1-2 dias uteis"
+        )
+    else:
+        lines.append(
+            "Dados FRED: sem observacoes recentes; lag tipico 1-2 dias uteis"
+        )
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
 
 async def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "morning"
-    if mode not in ("morning", "evening"):
-        logger.error("Invalid mode: %s (use 'morning' or 'evening')", mode)
+    if mode not in ("morning", "evening", "macro"):
+        logger.error("Invalid mode: %s (use 'morning', 'evening' or 'macro')", mode)
         sys.exit(1)
 
     logger.info("Digest starting in %s mode...", mode)
 
-    if mode == "morning":
-        data = _gather_morning_data()
-    else:
-        data = _gather_evening_data()
+    if mode == "macro":
+        # Deterministic numeric brief — no LLM call.
+        text = _format_macro_message(_gather_macro_data())
+    elif mode == "morning":
+        text = await _synthesise(mode, _gather_morning_data())
+    else:  # evening
+        text = await _synthesise(mode, _gather_evening_data())
 
-    text = await _synthesise(mode, data)
     await _send_telegram(text)
 
     state = _load_json(DIGEST_STATE, {})

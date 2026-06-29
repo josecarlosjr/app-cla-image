@@ -297,6 +297,28 @@ def get_latest_all() -> dict[str, dict]:
     return out
 
 
+def get_recent(indicator: str, n: int = 2) -> list[dict]:
+    """The ``n`` most recent observations for ``indicator``, newest first.
+
+    Each row is ``{"ts", "value"}``; returns ``[]`` when the indicator
+    has no data. The Telegram macro digest uses this with ``n=2`` to
+    compute "value (+/-diff vs prior_ts)" — it needs both the latest
+    AND the immediately preceding observation, regardless of the
+    calendar gap between them (weekends, holidays, FRED publication
+    lag). "vs prior_ts" is honest about *which* prior point we compared
+    against, in a way "vs yesterday" would not be.
+    """
+    if indicator not in INDICATORS:
+        raise ValueError(f"unknown indicator {indicator!r}")
+    n = max(1, int(n))
+    rows = _db().execute(
+        "SELECT ts, value FROM macro_indicators "
+        "WHERE indicator = ? ORDER BY ts DESC LIMIT ?",
+        (indicator, n),
+    ).fetchall()
+    return [{"ts": r["ts"], "value": r["value"]} for r in rows]
+
+
 def count_by_indicator() -> dict[str, int]:
     """Diagnostic: ``{indicator: n_rows}``. Useful for the backfill
     pre-flight check and the run summary."""
