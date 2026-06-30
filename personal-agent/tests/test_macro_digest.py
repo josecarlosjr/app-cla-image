@@ -13,6 +13,8 @@ Runnable both ways:
 import os
 import sys
 import tempfile
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 # Path bootstrap — set BEFORE importing the modules under test so
 # DATA_DIR points at a throwaway SQLite, and so sibling imports
@@ -83,7 +85,7 @@ def test_a1_happy_path_matches_spec():
     for line in expected_lines:
         assert line in msg, f"missing line: {line!r}"
     assert "WARNING" not in msg
-    assert "Dados FRED: fecho de 25/06/2026; lag tipico 1-2 dias uteis" in msg
+    assert "Dados FRED: fecho mais recente 25/06/2026; lag tipico 1-2 dias uteis" in msg
 
 
 def test_a2_header_tracks_daily_cape_tracks_monthly():
@@ -209,6 +211,58 @@ def test_a6_single_obs_daily_no_prior_suffix():
     }
     msg = digest._format_macro_message(solo)
     assert "VIX: 18.89 (sem observacao anterior)" in msg, msg
+
+
+def test_a7_today_does_not_leak_into_header_or_footer():
+    """Header AND footer must show max(daily_latest_ts), never today.
+
+    Cenário: hoje é domingo 28/06/2026 (sem mercado), max(daily)=sexta
+    26/06. O brief deve referir 26/06 em ambos os lados; nenhuma data
+    de 27/06–30/06 pode aparecer.
+
+    Defensive guard: hoje o formatter não chama ``datetime.now()``, mas
+    se alguém um dia introduzir um "as of today" no header / footer e
+    voltar atrás à hipótese errada de que ``today == max(daily)``,
+    este teste falha imediatamente.
+    """
+    fri = "2026-06-26"
+    thu = "2026-06-25"
+    fixture = {
+        "fred_latest_ts": fri,
+        "by_indicator": {
+            "vix":          _build("vix", "daily",
+                            [{"ts": fri, "value": 18.89},
+                             {"ts": thu, "value": 16.78}]),
+            "hy_oas":       _build("hy_oas", "daily",
+                            [{"ts": fri, "value": 2.78},
+                             {"ts": thu, "value": 2.66}]),
+            "sp500_close":  _build("sp500_close", "daily",
+                            [{"ts": fri, "value": 7354.02},
+                             {"ts": thu, "value": 7472.79}]),
+            "tnx_yield":    _build("tnx_yield", "daily",
+                            [{"ts": fri, "value": 4.40},
+                             {"ts": thu, "value": 4.46}]),
+            "cape_shiller": _build("cape_shiller", "monthly",
+                            [{"ts": "2026-06-01", "value": 41.32},
+                             {"ts": "2026-05-01", "value": 41.10}]),
+        },
+    }
+    # `digest.datetime` é o símbolo `datetime` re-exportado por
+    # `from datetime import datetime, ...`. Patchar aqui apanha
+    # qualquer futura chamada `datetime.now()` dentro do formatter.
+    sunday = datetime(2026, 6, 28, 10, 0, 0, tzinfo=timezone.utc)
+    with patch.object(digest, "datetime") as mock_dt:
+        mock_dt.now.return_value = sunday
+        mock_dt.fromisoformat = datetime.fromisoformat  # preservar parsing
+        msg = digest._format_macro_message(fixture)
+
+    assert msg.startswith("*Macro - 26/06/2026*"), msg[:60]
+    assert "Dados FRED: fecho mais recente 26/06/2026" in msg, msg
+    # Nenhuma data de hoje / weekend pode aparecer no brief.
+    for forbidden in ("27/06", "28/06", "29/06", "30/06"):
+        assert forbidden not in msg, (
+            f"data {forbidden!r} (today/weekend) vazou no brief:\n{msg}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -430,9 +430,13 @@ def _format_macro_message(data: dict) -> str:
 
     lines.append("")
     if fred_ts:
+        # "fecho mais recente" (não "fecho de hoje") porque o brief pode
+        # correr num dia em que FRED ainda não publicou — a data aqui é
+        # SEMPRE max(daily_latest_ts) do DB, nunca today. Header acompanha
+        # a mesma data pelo mesmo motivo (consistência total).
         footer_dt = datetime.fromisoformat(fred_ts[:10])
         lines.append(
-            f"Dados FRED: fecho de {footer_dt.strftime('%d/%m/%Y')}; "
+            f"Dados FRED: fecho mais recente {footer_dt.strftime('%d/%m/%Y')}; "
             "lag tipico 1-2 dias uteis"
         )
     else:
