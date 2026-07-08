@@ -66,7 +66,9 @@ CREATE TABLE IF NOT EXISTS patterns (
     num_sources INTEGER DEFAULT 0,
     analysis TEXT DEFAULT '',
     confidence TEXT DEFAULT 'MEDIA',
-    timestamp TEXT NOT NULL
+    timestamp TEXT NOT NULL,
+    regime_snapshot_json TEXT,
+    regime_def_version INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_patterns_timestamp ON patterns(timestamp);
 CREATE INDEX IF NOT EXISTS idx_patterns_confidence ON patterns(confidence);
@@ -258,6 +260,7 @@ def _db() -> sqlite3.Connection:
         # ALTER TABLE, which would crash on a stale table that predates
         # the column.
         _migrate_embeddings_schema(_conn)
+        _migrate_patterns_schema(_conn)
         _conn.executescript(_SCHEMA)
         _ensure_vec_table(_conn)
         _migrate_from_json()
@@ -328,6 +331,43 @@ def _migrate_embeddings_schema(conn: sqlite3.Connection) -> None:
             logger.info(
                 "Retagged %d legacy 'v0' embeddings as %s",
                 cur.rowcount, EMBEDDING_VERSION_DEFAULT,
+            )
+
+
+def _migrate_patterns_schema(conn: sqlite3.Connection) -> None:
+    """Add regime columns to a pre-B2 ``patterns`` table if missing.
+
+    Espelha ``_migrate_embeddings_schema``: PRAGMA + ALTER TABLE idempotente.
+    Corre antes de ``executescript(_SCHEMA)`` porque o CREATE TABLE já lá
+    inclui as colunas — para volumes novos os dois caminhos convergem no
+    mesmo schema; para volumes existentes só este caminho as adiciona.
+
+    As duas colunas movem-se em par (ambas preenchidas para patterns
+    anotados, ambas NULL para skips) — decisão de higiene epistémica
+    ratificada no checkpoint da Fase 2. A informação "qual foi o motivo
+    do skip" vive no log estruturado ``pattern_regime_skipped``, não numa
+    coluna do pattern.
+    """
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='patterns'"
+    ).fetchone()
+    if not table_exists:
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(patterns)")}
+    with conn:
+        if "regime_snapshot_json" not in cols:
+            conn.execute(
+                "ALTER TABLE patterns ADD COLUMN regime_snapshot_json TEXT"
+            )
+            logger.info(
+                "Migrated patterns table: added regime_snapshot_json column"
+            )
+        if "regime_def_version" not in cols:
+            conn.execute(
+                "ALTER TABLE patterns ADD COLUMN regime_def_version INTEGER"
+            )
+            logger.info(
+                "Migrated patterns table: added regime_def_version column"
             )
 
 
@@ -475,14 +515,32 @@ def _row_to_article(row: sqlite3.Row) -> dict:
 # Patterns
 # ---------------------------------------------------------------------------
 
-def insert_pattern(pattern: dict) -> None:
+def insert_pattern(
+    pattern: dict,
+    *,
+    regime_snapshot_json: str | None = None,
+    regime_def_version: int | None = None,
+) -> None:
+    """Insert a detected pattern row.
+
+    ``regime_snapshot_json`` + ``regime_def_version`` são opcionais e
+    andam SEMPRE em par:
+      - ambos preenchidos → pattern anotado sob a versão indicada;
+      - ambos None (default) → pattern sem anotação de regime
+        (missing/stale/erro no cálculo — decidido pelo caller, tipicamente
+        via ``pattern_matcher._maybe_compute_regime``).
+    O caller deve nunca passar só um dos dois; esta função aceita ambos
+    NULL sem levantar erro (schema permite-o) mas não tenta reconstruir
+    o par a partir do que o caller passar de forma inconsistente.
+    """
     conn = _db()
     with conn:
         conn.execute(
             """INSERT INTO patterns
                (articles_json, categories_json, sources_json, num_sources,
-                analysis, confidence, timestamp)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                analysis, confidence, timestamp,
+                regime_snapshot_json, regime_def_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 json.dumps(pattern.get("articles", []), ensure_ascii=False),
                 json.dumps(pattern.get("categories", []), ensure_ascii=False),
@@ -491,6 +549,8 @@ def insert_pattern(pattern: dict) -> None:
                 pattern.get("analysis", ""),
                 pattern.get("confidence", "MEDIA"),
                 pattern.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                regime_snapshot_json,
+                regime_def_version,
             ),
         )
 
