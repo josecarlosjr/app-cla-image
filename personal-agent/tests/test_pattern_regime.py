@@ -1,24 +1,26 @@
-"""Unit tests para pattern_matcher._maybe_compute_regime — helper que
-compõe (regime_snapshot_json, regime_def_version) para anotar patterns
-no momento da gravação.
+"""Unit tests para o gancho macro-regime de patterns.
 
-Casos exigidos pelo checkpoint da Fase 2:
-  - Input completo → snapshot serializado + REGIME_DEF_VERSION.
-  - Input com stale → (None, None) + log estruturado.
-  - Input com missing → (None, None) + log estruturado.
+Duas camadas:
+  A. ``pattern_matcher._maybe_compute_regime`` — helper que compõe
+     (regime_snapshot_json, regime_def_version) para anotar patterns
+     no momento da gravação.
+  B. ``GET /api/patterns/{id}/regime`` — endpoint que devolve o snapshot
+     desserializado (envelope B2 ratificado no checkpoint da Fase 4).
 
-Extras baixo custo:
-  - Row com ``no_data=True`` tratada como MISSING (não como stale).
-  - ``mr.get_freshness`` a levantar excepção → (None, None) + error log,
-    nunca propaga (não pode bloquear gravação do pattern).
+Casos exigidos pelos checkpoints Fase 2 + Fase 4:
+  A: completo → snap+ver; stale → NULL+NULL+log; missing → NULL+NULL+log.
+  B: existente com snapshot → 200 + envelope; existente sem → 200 +
+     regime_available=false + reason "not_computed_at_detection";
+     inexistente → 404; snapshot corrupto → 200 + reason
+     "snapshot_deserialization_failed" (defensivo).
 
 Runnable both ways:
     pytest personal-agent/tests/test_pattern_regime.py
     python  personal-agent/tests/test_pattern_regime.py
 
-Ficheiro separado de ``test_regime.py`` porque ``pattern_matcher`` puxa
-importes pesados (feeds/llm/embeddings/database); ``test_regime.py``
-mantém-se lean para o classificador puro.
+Ficheiro separado de ``test_regime.py`` porque ``pattern_matcher`` +
+``api`` puxam importes pesados (feeds/llm/embeddings/database/fastapi);
+``test_regime.py`` mantém-se lean para o classificador puro.
 """
 import json
 import os
@@ -38,6 +40,9 @@ if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
 import pattern_matcher  # noqa: E402
+import database as db   # noqa: E402
+import api               # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +184,121 @@ def test_get_freshness_raises_returns_null_pair_and_logs_error():
     assert errors[0].kwargs.get("reason") == "get_freshness_failed"
 
 
+# ---------------------------------------------------------------------------
+# B. GET /api/patterns/{pattern_id}/regime
+# ---------------------------------------------------------------------------
+
+_client: TestClient | None = None
+
+
+def _api_client() -> TestClient:
+    """Um TestClient partilhado — cheap para reutilizar entre testes."""
+    global _client
+    if _client is None:
+        _client = TestClient(api.app)
+    return _client
+
+
+def _insert_test_pattern(*, snapshot_json=None, def_version=None,
+                          confidence="MEDIA") -> int:
+    """Grava um pattern mínimo e devolve o id gerado.
+
+    Não usa mocks — vai mesmo ao SQLite temp para exercitar o path completo
+    do endpoint (get_pattern_by_id → _row_to_pattern → JSON envelope).
+    """
+    db.insert_pattern(
+        {
+            "articles": [],
+            "categories": ["test"],
+            "sources": ["test-source"],
+            "num_sources": 1,
+            "analysis": "endpoint fixture",
+            "confidence": confidence,
+        },
+        regime_snapshot_json=snapshot_json,
+        regime_def_version=def_version,
+    )
+    row = db._db().execute(
+        "SELECT MAX(id) AS id FROM patterns"
+    ).fetchone()
+    return int(row["id"])
+
+
+def test_endpoint_pattern_with_snapshot_returns_envelope_and_snapshot():
+    """Pattern com snapshot válido → 200, regime_available=true, snapshot
+    desserializado com regimes={vix,hy_oas,cape,erp}."""
+    snap = {
+        "def_version": 1,
+        "computed_at": "2026-07-08T14:00:00+00:00",
+        "inputs": {"vix": 16.0, "hy_oas": 2.75, "cape": 41.66,
+                   "ten_year": 4.48},
+        "regimes": {"vix": "normal", "hy_oas": "apertado",
+                    "cape": "extremo", "erp": "comprimido"},
+        "derived": {"erp": -2.08},
+    }
+    pattern_id = _insert_test_pattern(
+        snapshot_json=json.dumps(snap, ensure_ascii=False),
+        def_version=1,
+    )
+    resp = _api_client().get(f"/api/patterns/{pattern_id}/regime")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["pattern_id"] == pattern_id
+    assert body["regime_available"] is True
+    assert body["snapshot"]["regimes"]["cape"] == "extremo"
+    assert body["snapshot"]["regimes"]["erp"] == "comprimido"
+    assert body["snapshot"]["def_version"] == 1
+
+
+def test_endpoint_pattern_without_snapshot_returns_regime_unavailable():
+    """Pattern com regime_snapshot_json NULL → 200, regime_available=false,
+    reason=not_computed_at_detection."""
+    pattern_id = _insert_test_pattern(snapshot_json=None, def_version=None)
+    resp = _api_client().get(f"/api/patterns/{pattern_id}/regime")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {
+        "pattern_id": pattern_id,
+        "regime_available": False,
+        "reason": "not_computed_at_detection",
+    }
+
+
+def test_endpoint_pattern_not_found_returns_404():
+    """Id inexistente → 404 com envelope {'error': 'pattern not found'}.
+    Escolho 99999 (garantido acima de qualquer id gerado nesta suite)."""
+    resp = _api_client().get("/api/patterns/99999/regime")
+    assert resp.status_code == 404, resp.text
+    assert resp.json() == {"error": "pattern not found"}
+
+
+def test_endpoint_snapshot_corrupt_json_returns_defensive_envelope():
+    """regime_snapshot_json contém string não-JSON → 200 defensivo com
+    reason=snapshot_deserialization_failed. Não pode explodir o endpoint
+    por causa de 1 row corrupta (nunca deve acontecer, mas defesa em
+    profundidade)."""
+    pattern_id = _insert_test_pattern(
+        snapshot_json="not-a-json-string {oops",
+        def_version=1,  # def_version presente mas snap partido — edge caso.
+    )
+    with patch.object(api, "log_event") as mock_log:
+        resp = _api_client().get(f"/api/patterns/{pattern_id}/regime")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["pattern_id"] == pattern_id
+    assert body["regime_available"] is False
+    assert body["reason"] == "snapshot_deserialization_failed"
+    # Log estruturado para auditoria posterior — mesma prática que os
+    # skips do helper.
+    corrupt_events = [c for c in mock_log.call_args_list
+                      if c.args[0] == "pattern_regime_endpoint_corrupt"]
+    assert len(corrupt_events) == 1, mock_log.call_args_list
+    assert corrupt_events[0].kwargs.get("pattern_id") == pattern_id
+
+
 _TESTS = [
+    # A. helper
     ("test_complete_inputs_return_snapshot_and_version",
      test_complete_inputs_return_snapshot_and_version),
     ("test_stale_indicator_returns_null_pair_and_logs_skip",
@@ -190,6 +309,15 @@ _TESTS = [
      test_no_data_row_treated_as_missing_not_stale),
     ("test_get_freshness_raises_returns_null_pair_and_logs_error",
      test_get_freshness_raises_returns_null_pair_and_logs_error),
+    # B. endpoint
+    ("test_endpoint_pattern_with_snapshot_returns_envelope_and_snapshot",
+     test_endpoint_pattern_with_snapshot_returns_envelope_and_snapshot),
+    ("test_endpoint_pattern_without_snapshot_returns_regime_unavailable",
+     test_endpoint_pattern_without_snapshot_returns_regime_unavailable),
+    ("test_endpoint_pattern_not_found_returns_404",
+     test_endpoint_pattern_not_found_returns_404),
+    ("test_endpoint_snapshot_corrupt_json_returns_defensive_envelope",
+     test_endpoint_snapshot_corrupt_json_returns_defensive_envelope),
 ]
 
 
@@ -201,4 +329,4 @@ if __name__ == "__main__":
         except AssertionError as exc:
             print(f"FAIL {name}: {exc}")
             sys.exit(1)
-    print(f"\nPASS  {len(_TESTS)}/{len(_TESTS)} pattern_matcher._maybe_compute_regime tests")
+    print(f"\nPASS  {len(_TESTS)}/{len(_TESTS)} pattern regime tests (helper + endpoint)")

@@ -611,6 +611,13 @@ def prune_patterns(max_rows: int = 100) -> None:
 
 
 def _row_to_pattern(row: sqlite3.Row) -> dict:
+    # regime_snapshot_json / regime_def_version são adicionadas em B2:
+    # devolvidas como RAW (sem json.loads) porque quem quer o snapshot
+    # desserializado usa o endpoint dedicado /api/patterns/{id}/regime.
+    # O list endpoint fica minimalista (string + int) — cliente que só
+    # queira saber "que patterns têm regime" faz um SELECT campo-a-campo.
+    # Ambas as chaves estão sempre presentes; valor None quando skip.
+    keys = row.keys() if hasattr(row, "keys") else []
     return {
         "id": row["id"],
         "articles": json.loads(row["articles_json"]),
@@ -620,7 +627,32 @@ def _row_to_pattern(row: sqlite3.Row) -> dict:
         "analysis": row["analysis"],
         "confidence": row["confidence"],
         "timestamp": row["timestamp"],
+        "regime_snapshot_json": (
+            row["regime_snapshot_json"]
+            if "regime_snapshot_json" in keys else None
+        ),
+        "regime_def_version": (
+            row["regime_def_version"]
+            if "regime_def_version" in keys else None
+        ),
     }
+
+
+def get_pattern_by_id(pattern_id: int) -> dict | None:
+    """Fetch a single pattern by id, or None if not found.
+
+    Usado pelo endpoint /api/patterns/{id}/regime. Devolve o dict via
+    _row_to_pattern (mesmos campos que get_patterns) — a desserialização
+    do snapshot fica com o caller, para não bloatar este helper com
+    conhecimento do formato B2 do regime.
+    """
+    conn = _db()
+    row = conn.execute(
+        "SELECT * FROM patterns WHERE id = ?", (int(pattern_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_pattern(row)
 
 
 # ---------------------------------------------------------------------------
