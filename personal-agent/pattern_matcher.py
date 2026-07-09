@@ -14,6 +14,8 @@ from database import (
     insert_pattern, get_patterns, get_pattern_article_titles, prune_patterns,
     find_similar_embeddings, is_vec_available,
 )
+import macro_repository as mr
+from regime import compute_regime_snapshot, REGIME_DEF_VERSION
 from telegram_format import to_telegram_html
 
 from log_config import setup_logging, log_event
@@ -91,6 +93,79 @@ CATEGORY_KEYWORDS = {
         "export ban", "stockpile", "inventory",
     ],
 }
+
+
+# ---------------------------------------------------------------------------
+# Macro regime snapshot — attach to each pattern at write time
+# ---------------------------------------------------------------------------
+
+# Os 4 indicadores necessários para produzir um snapshot completo. Ausência
+# de qualquer um deles OU staleness em qualquer um deles força skip
+# (regime_snapshot_json=None, regime_def_version=None).
+_REGIME_REQUIRED_INDICATORS = ("vix", "hy_oas", "cape_shiller", "tnx_yield")
+
+
+def _maybe_compute_regime() -> tuple[str | None, int | None]:
+    """Devolve ``(regime_snapshot_json, regime_def_version)`` para anotar
+    o(s) pattern(s) que estão prestes a ser gravado(s) nesta run.
+
+    Contrato do par (ratificado no checkpoint da Fase 2):
+      - Ambos preenchidos → sabemos onde estamos no regime macro.
+      - Ambos None → não sabemos (indicador em falta, stale, ou erro no
+        cálculo). O motivo vive no ``pattern_regime_skipped`` /
+        ``pattern_regime_error`` log estruturado, não numa coluna.
+
+    NUNCA levanta excepção — um erro na composição do regime não pode
+    bloquear a gravação do pattern (honestidade > completude).
+    """
+    try:
+        freshness = {r["indicator"]: r for r in mr.get_freshness()}
+    except Exception as e:
+        log_event(
+            "pattern_regime_error",
+            reason="get_freshness_failed",
+            error=str(e),
+        )
+        return None, None
+
+    missing: list[str] = []
+    stale: list[str] = []
+    values: dict[str, float] = {}
+    for ind in _REGIME_REQUIRED_INDICATORS:
+        row = freshness.get(ind)
+        if row is None or row.get("no_data") or row.get("value") is None:
+            missing.append(ind)
+            continue
+        if row.get("is_stale"):
+            stale.append(ind)
+            continue
+        values[ind] = row["value"]
+
+    if missing or stale:
+        log_event(
+            "pattern_regime_skipped",
+            missing=missing,
+            stale=stale,
+            required=list(_REGIME_REQUIRED_INDICATORS),
+        )
+        return None, None
+
+    try:
+        snap = compute_regime_snapshot(
+            vix=values["vix"],
+            hy_oas=values["hy_oas"],
+            cape=values["cape_shiller"],
+            ten_year_yield=values["tnx_yield"],
+        )
+    except Exception as e:
+        log_event(
+            "pattern_regime_error",
+            reason="compute_snapshot_failed",
+            error=str(e),
+        )
+        return None, None
+
+    return json.dumps(snap, ensure_ascii=False), REGIME_DEF_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +436,11 @@ async def detect_patterns_on_demand() -> dict:
 
     existing_titles = get_pattern_article_titles()
 
+    # Regime é um snapshot da run — todos os patterns detectados nesta
+    # invocação partilham o mesmo estado macro. Calculado UMA vez fora
+    # do loop (1 leitura de get_freshness) em vez de por-pattern.
+    regime_json, regime_ver = _maybe_compute_regime()
+
     new_count = 0
     sonnet_calls = 0
     for cluster in strong[:5]:
@@ -379,7 +459,11 @@ async def detect_patterns_on_demand() -> dict:
         if not pattern:
             continue
 
-        insert_pattern(pattern)
+        insert_pattern(
+            pattern,
+            regime_snapshot_json=regime_json,
+            regime_def_version=regime_ver,
+        )
         new_count += 1
 
     prune_patterns(MAX_PATTERNS_STORED)
@@ -428,6 +512,11 @@ async def main():
     strong = [c for c in clusters if _is_strong_pattern(c)]
     logger.info("Strong patterns (%d+ sources): %d", MIN_SOURCES_FOR_STRONG, len(strong))
 
+    # Regime é um snapshot da run — todos os patterns detectados nesta
+    # invocação partilham o mesmo estado macro. Calculado UMA vez fora
+    # do loop (1 leitura de get_freshness) em vez de por-pattern.
+    regime_json, regime_ver = _maybe_compute_regime()
+
     new_count = 0
 
     for cluster in strong[:5]:
@@ -441,7 +530,11 @@ async def main():
         if not pattern:
             continue
 
-        insert_pattern(pattern)
+        insert_pattern(
+            pattern,
+            regime_snapshot_json=regime_json,
+            regime_def_version=regime_ver,
+        )
         new_count += 1
 
         if pattern["confidence"] == "ALTA":

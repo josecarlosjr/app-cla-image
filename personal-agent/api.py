@@ -7,6 +7,7 @@ from datetime import datetime
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import database as db
@@ -314,6 +315,68 @@ async def get_patterns(
 ):
     patterns = db.get_patterns(confidence=confidence, category=category)
     return {"patterns": patterns[:20], "total": len(patterns)}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/patterns/{pattern_id}/regime — macro regime snapshot for a pattern
+# ---------------------------------------------------------------------------
+#
+# Envelope B2 (ratificado no checkpoint da Fase 4):
+#   - Pattern inexistente         -> 404 {"error": "pattern not found"}
+#   - Snapshot NULL (skip)        -> 200 {pattern_id, regime_available: false,
+#                                         reason: "not_computed_at_detection"}
+#   - Snapshot corrupto (edge)    -> 200 {pattern_id, regime_available: false,
+#                                         reason: "snapshot_deserialization_failed"}
+#   - Snapshot presente e válido  -> 200 {pattern_id, regime_available: true,
+#                                         snapshot: {...}}
+# Cliente lê snapshot.regimes directamente (dict {vix, hy_oas, cape, erp}) —
+# não há campo `interpretation` porque seria duplicação. Motivos finos de
+# skip vivem no log_event `pattern_regime_skipped`, cruzados por timestamp.
+#
+# `regime_snapshot_json` no campo raw pode ser NULL (skip por missing/stale)
+# ou string. `regime_def_version` ainda não é devolvido no envelope porque
+# é sempre 1 hoje; ao chegar v2, adicionamos ao snapshot desserializado
+# (já vem lá dentro como `def_version`, portanto não perdemos versionamento).
+
+@app.get("/api/patterns/{pattern_id}/regime")
+async def get_pattern_regime(pattern_id: int):
+    pattern = db.get_pattern_by_id(pattern_id)
+    if pattern is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "pattern not found"},
+        )
+
+    raw = pattern.get("regime_snapshot_json")
+    if raw is None:
+        return {
+            "pattern_id": pattern_id,
+            "regime_available": False,
+            "reason": "not_computed_at_detection",
+        }
+
+    try:
+        snapshot = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        # Row corrupta (nunca deve acontecer com dados escritos por B2 —
+        # `_maybe_compute_regime` só produz json.dumps de dict validado.
+        # Guard defensivo para não explodir o endpoint por 1 row má.)
+        log_event(
+            "pattern_regime_endpoint_corrupt",
+            pattern_id=pattern_id,
+            raw_snippet=str(raw)[:120],
+        )
+        return {
+            "pattern_id": pattern_id,
+            "regime_available": False,
+            "reason": "snapshot_deserialization_failed",
+        }
+
+    return {
+        "pattern_id": pattern_id,
+        "regime_available": True,
+        "snapshot": snapshot,
+    }
 
 
 # ---------------------------------------------------------------------------
