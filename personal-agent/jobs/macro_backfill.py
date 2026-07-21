@@ -1,9 +1,11 @@
 """One-shot macro indicators backfill (Onda 12 Sprint 1, Camada B).
 
 Idempotent full-history fetch for the 5 indicators in
-``macro_repository.INDICATORS``. Designed for manual invocation, not
-scheduled — the CronJob uses ``macro_fetcher.py`` with ``mode="daily"``
-and a short lookback window instead.
+``macro_fetcher.SUPPORTED_INDICATORS`` (the FRED + Shiller subset of
+``macro_repository.INDICATORS`` — BIS credit-to-GDP entries live behind
+``jobs/bis_fetcher.py`` / ``jobs/bis_backfill.py``). Designed for manual
+invocation, not scheduled — the CronJob uses ``macro_fetcher.py`` with
+``mode="daily"`` and a short lookback window instead.
 
 Invocation
 ----------
@@ -94,7 +96,7 @@ def _preflight(stream=None) -> dict[str, int]:
     if counts:
         # Show the per-indicator baseline so the operator can spot e.g.
         # a partial previous run before re-launching.
-        for ind in mr.INDICATORS:
+        for ind in mf.SUPPORTED_INDICATORS:
             n = counts.get(ind, 0)
             print(f"  {ind:14}: {n} rows", file=stream, flush=True)
     try:
@@ -117,7 +119,7 @@ def _format_report(summary: dict, ranges: dict[str, dict | None]) -> str:
     """
     totals = summary["totals"]
     lines = [
-        f"Indicators: {len(mr.INDICATORS)}. "
+        f"Indicators: {len(mf.SUPPORTED_INDICATORS)}. "
         f"Inserted: {totals['inserted']}. "
         f"Updated: {totals.get('updated', 0)}. "
         f"Skipped: {totals['skipped']}. "
@@ -125,7 +127,7 @@ def _format_report(summary: dict, ranges: dict[str, dict | None]) -> str:
         "",
         "Per indicator:",
     ]
-    for ind in mr.INDICATORS:
+    for ind in mf.SUPPORTED_INDICATORS:
         b = summary["by_indicator"].get(ind, {})
         rng = ranges.get(ind)
         if "error" in b:
@@ -177,7 +179,7 @@ def main(*, run_all=None, stream=None) -> int:
     runner = run_all or mf.run_all
     summary = runner(mode=mf.MODE_BACKFILL)
 
-    ranges = {ind: mr.get_ts_range(ind) for ind in mr.INDICATORS}
+    ranges = {ind: mr.get_ts_range(ind) for ind in mf.SUPPORTED_INDICATORS}
     report = _format_report(summary, ranges)
     print(file=stream)
     print(report, file=stream, flush=True)
@@ -190,12 +192,12 @@ def main(*, run_all=None, stream=None) -> int:
                 **summary["by_indicator"].get(ind, {}),
                 "range": ranges.get(ind),
             }
-            for ind in mr.INDICATORS
+            for ind in mf.SUPPORTED_INDICATORS
         },
         totals=summary["totals"],
     )
 
-    n_total = len(mr.INDICATORS)
+    n_total = len(mf.SUPPORTED_INDICATORS)
     n_failed = summary["totals"]["failed"]
     return 0 if n_failed < n_total else 1
 
