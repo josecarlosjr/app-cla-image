@@ -17,10 +17,62 @@ from database import _db
 
 
 # ---------------------------------------------------------------------------
-# Catalog — the 5 indicators this sprint ships with. Keep this dict the
-# single source of truth: ``GET /api/macro/indicators``, the fetcher and
-# the backfill all derive from it.
+# Catalog — 33 indicators total (5 core macro + 28 BIS credit-to-GDP).
+# ``INDICATORS`` is the single source of truth: ``GET /api/macro/indicators``,
+# the fetchers and the backfills all derive from it.
+#
+# Core macro (5) — daily FRED + monthly Shiller CAPE — is the original
+# Sprint 1 catalog. BIS credit-to-GDP (28) — 14 countries × {gap, ratio}
+# — is Sprint C1. Cadence and on_conflict semantics propagate through
+# ``upsert_observations`` and ``get_freshness`` from the entry itself; no
+# hardcoded switch statements on indicator id anywhere in this module.
 # ---------------------------------------------------------------------------
+
+# BIS credit-to-GDP: 14 countries. ISO 3166-1 alpha-2 lowercase (internal
+# convention); the BIS API expects uppercase, translated at the fetcher
+# boundary. ``gb`` is the UK (BIS/ISO), not ``uk``. Order here doesn't
+# matter for correctness; kept roughly by geography for eyeballing.
+_BIS_COUNTRIES: tuple[str, ...] = (
+    "us", "gb", "de", "fr", "it", "es", "pt",       # Americas + Western Europe
+    "jp", "kr", "au",                                # Asia-Pacific advanced
+    "ca",                                            # North America (other)
+    "cn", "in", "br",                                # EMEs
+)
+
+
+def _bis_indicator_entry(country: str, series_type: str) -> dict:
+    """Emit one BIS credit-to-GDP catalog entry.
+
+    ``series_type`` is ``'gap'`` (narrow, Basel III) or ``'ratio'``
+    (level). The narrow identity is baked in by hardcoding
+    ``TC_BORROWERS='P'`` (private non-financial) and ``TC_LENDERS='A'``
+    (all sectors = total credit). The bank-only variant ``TC_LENDERS='B'``
+    is deliberately unreachable through this helper — a mistyped BIS
+    dataflow key would still work, but a mistyped ``series_type`` won't.
+    See ``test_catalog_bis_series_keys_are_narrow_gap_or_ratio`` for the
+    regex guard.
+
+    ``on_conflict='update_on_change'`` because BIS's HP filter is
+    one-sided: every new observation shifts the trend, and therefore the
+    entire historical gap series is republished with revised values. Same
+    reasoning as CAPE Shiller. Idempotency "2× in the same publication
+    cycle → 0 writes" still holds; "2× across publications → N updates"
+    is expected, not a bug.
+    """
+    if series_type not in ("gap", "ratio"):
+        raise ValueError(f"series_type must be 'gap' or 'ratio', got {series_type!r}")
+    dim_dtype = "C" if series_type == "gap" else "A"
+    return {
+        "id": f"bis_credit_{series_type}_{country}",
+        "source": "bis",
+        "cadence": "quarterly",
+        "on_conflict": "update_on_change",
+        "dataflow": "BIS,WS_CREDIT_GAP,1.0",
+        "series_key": f"Q.{country.upper()}.P.A.{dim_dtype}",
+        "country": country.upper(),
+        "series_type": series_type,
+    }
+
 
 INDICATORS: dict[str, dict] = {
     "cape_shiller": {
@@ -80,6 +132,11 @@ INDICATORS: dict[str, dict] = {
         "on_conflict": "ignore",
         "series_id": "DGS10",
     },
+    # ---- BIS credit-to-GDP: 14 countries × {gap, ratio} = 28 entries ----
+    **{f"bis_credit_gap_{c}":   _bis_indicator_entry(c, "gap")
+       for c in _BIS_COUNTRIES},
+    **{f"bis_credit_ratio_{c}": _bis_indicator_entry(c, "ratio")
+       for c in _BIS_COUNTRIES},
 }
 
 
@@ -89,13 +146,30 @@ INDICATORS: dict[str, dict] = {
 # weekly cadence (prior-Friday-to-this-Friday is 5 business days) plus
 # FRED's publication lag over a long weekend, without false positives.
 # ``monthly`` thresholds tolerate a little slack around the multpl.com
-# refresh cadence (~mid-month). Both values are tweakable here without
-# touching callers. Holidays are deliberately out of scope — tune the
-# threshold rather than maintaining a holiday calendar.
+# refresh cadence (~mid-month). All three values are tweakable here
+# without touching callers. Holidays are deliberately out of scope —
+# tune the threshold rather than maintaining a holiday calendar.
+#
+# ``quarterly`` is BIS credit-to-GDP: BIS publishes ~T+90 (three-month
+# lag). 150 calendar days is 90 lag + ~60 slack — comfortable margin
+# without hiding a real BIS outage. Wide by design because the
+# underlying data doesn't move fast; a quarter that's 5 months late
+# still reflects reality closely enough for regime detection. If BIS's
+# publication cadence ever tightens (or slips), tune here.
 # ---------------------------------------------------------------------------
 
 STALE_BUSINESS_DAYS_DAILY = 6
 STALE_CALENDAR_DAYS_MONTHLY = 40
+STALE_CALENDAR_DAYS_QUARTERLY = 150
+
+# Cadence → threshold lookup. Extend this map (and add the constant
+# above) when a new cadence family is introduced. Direct indexing —
+# a cadence missing from the map is a bug (not a silent fallback).
+_STALE_THRESHOLDS: dict[str, int] = {
+    "daily":     STALE_BUSINESS_DAYS_DAILY,
+    "monthly":   STALE_CALENDAR_DAYS_MONTHLY,
+    "quarterly": STALE_CALENDAR_DAYS_QUARTERLY,
+}
 
 
 def get_indicators_catalog() -> list[dict]:
@@ -381,12 +455,13 @@ def get_freshness(*, now_utc=None) -> list[dict]:
 
         {
           "indicator":      "<id>",
-          "cadence":        "daily" | "monthly",
+          "cadence":        "daily" | "monthly" | "quarterly",
           "latest_ts":      "YYYY-MM-DD" | None,
           "value":          float | None,
           "no_data":        True iff there is no row at all,
-          "age_days":       business days for daily / calendar days for monthly,
-          "threshold_days": STALE_THRESHOLD_*  (the comparison threshold),
+          "age_days":       business days for daily / calendar days for
+                              monthly and quarterly,
+          "threshold_days": ``_STALE_THRESHOLDS[cadence]``,
           "is_stale":       True iff age_days > threshold_days OR no_data,
         }
 
@@ -402,10 +477,7 @@ def get_freshness(*, now_utc=None) -> list[dict]:
     out: list[dict] = []
     for ind_id, cfg in INDICATORS.items():
         cadence = cfg["cadence"]
-        threshold = (
-            STALE_BUSINESS_DAYS_DAILY if cadence == "daily"
-            else STALE_CALENDAR_DAYS_MONTHLY
-        )
+        threshold = _STALE_THRESHOLDS[cadence]
         latest = latest_all.get(ind_id)
         if latest is None:
             out.append({
