@@ -213,9 +213,19 @@ def _is_botwall(body: str, resp: "httpx.Response") -> bool:
 # Single-indicator fetch
 # ---------------------------------------------------------------------------
 
-async def fetch_one(client: httpx.AsyncClient, indicator_id: str) -> dict:
+async def fetch_one(
+    client: httpx.AsyncClient,
+    indicator_id: str,
+    *,
+    start_period: str | None = None,
+) -> dict:
     """Fetch one BIS indicator; upsert to ``macro_indicators`` via
     ``macro_repository``.
+
+    ``start_period`` optional override — defaults to the module-level
+    ``START_PERIOD`` constant (``"1980"``). Backfill uses this to accept
+    an operator ``--start-period`` CLI argument without mutating the
+    module global.
 
     Nunca levanta. Devolve dict de diagnóstico::
 
@@ -236,8 +246,9 @@ async def fetch_one(client: httpx.AsyncClient, indicator_id: str) -> dict:
                 "n_inserted": 0, "n_updated": 0,
                 "error": "wrong_source"}
 
+    period = start_period if start_period is not None else START_PERIOD
     url = f"{BIS_API_BASE}/data/{cfg['dataflow']}/{cfg['series_key']}/all"
-    params = {"format": "csv", "startPeriod": START_PERIOD}
+    params = {"format": "csv", "startPeriod": period}
 
     result = {
         "indicator": indicator_id, "ok": False, "n_obs": 0,
@@ -336,9 +347,13 @@ async def fetch_one(client: httpx.AsyncClient, indicator_id: str) -> dict:
 # Full run
 # ---------------------------------------------------------------------------
 
-async def run() -> tuple[int, int, list[dict]]:
+async def run(*, start_period: str | None = None) -> tuple[int, int, list[dict]]:
     """Fetch all 28 supported indicators in parallel; return
     ``(ok_count, error_count, per_indicator_results)``.
+
+    ``start_period`` optional override (see ``fetch_one``); defaults to
+    the module constant. Backfill uses it for the ``--start-period`` CLI
+    override; the CronJob passes nothing so runs against the default.
 
     Emite ``bis_fetcher_run`` no fim com totais agregados.
     """
@@ -350,7 +365,8 @@ async def run() -> tuple[int, int, list[dict]]:
     t0 = datetime.now(timezone.utc)
     async with httpx.AsyncClient() as client:
         results = await asyncio.gather(*[
-            fetch_one(client, ind) for ind in SUPPORTED_INDICATORS
+            fetch_one(client, ind, start_period=start_period)
+            for ind in SUPPORTED_INDICATORS
         ])
     ok = sum(1 for r in results if r["ok"])
     err = len(results) - ok
