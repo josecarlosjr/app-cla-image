@@ -3,7 +3,7 @@
 Daily cron entry point. For each of the 5 indicators in
 ``SUPPORTED_INDICATORS`` (the FRED + Shiller subset of the wider
 ``macro_repository.INDICATORS`` catalog — BIS credit-to-GDP entries are
-handled by ``jobs/bis_fetcher.py``), hits the upstream source (FRED for
+handled by ``jobs/bis_fetcher``), hits the upstream source (FRED for
 4, multpl.com scrape for CAPE), upserts via ``macro_repository``
 (idempotent INSERT OR IGNORE / update_on_change), and emits structured
 ``log_event`` records.
@@ -533,7 +533,7 @@ _FETCHERS = {
 # outside this module (macro_backfill; future observability probes)
 # should iterate this set, NOT ``mr.INDICATORS`` directly. Sprint C1
 # adds BIS credit-to-GDP entries to ``mr.INDICATORS`` that live behind
-# a DIFFERENT fetcher (``jobs/bis_fetcher.py``); iterating the whole
+# a DIFFERENT fetcher (``jobs/bis_fetcher``); iterating the whole
 # catalog would report those under macro-fetcher accounting and shift
 # the backfill exit-code threshold. Immutable snapshot at import time.
 SUPPORTED_INDICATORS: tuple[str, ...] = tuple(_FETCHERS)

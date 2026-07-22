@@ -208,6 +208,30 @@ def test_no_import_of_quant_bis():
     assert "from quant_bis" not in src, "bis_fetcher imports from quant_bis"
 
 
+def test_macro_fetcher_does_not_import_bis_fetcher():
+    """Invariante bidireccional: ``macro_fetcher`` (Camada A FRED/Shiller)
+    também não conhece ``bis_fetcher``. Se um dia alguém quiser unificar
+    o run_all para cobrir também BIS, este teste apanha a mudança e
+    força discussão explícita da arquitectura em vez de acoplar por
+    inércia.
+
+    Padrão de detecção espelha o test 6 de ``test_bis_backfill.py``:
+    procura ``import bis_fetcher``, ``from bis_fetcher``, ou
+    ``bis_fetcher.<attr>`` (uso em código). Menções em docstring /
+    comentários são aceitáveis — servem de contexto humano."""
+    from jobs import macro_fetcher
+    src = inspect.getsource(macro_fetcher)
+    assert "import bis_fetcher" not in src, (
+        "macro_fetcher imports bis_fetcher"
+    )
+    assert "from bis_fetcher" not in src, (
+        "macro_fetcher imports from bis_fetcher"
+    )
+    assert "bis_fetcher." not in src, (
+        "macro_fetcher accesses bis_fetcher.<attr> (should be independent)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 8. Dry-run end-to-end com httpx mocked
 # ---------------------------------------------------------------------------
@@ -314,9 +338,11 @@ _TESTS = [
     # E. realistic parse
     ("test_valid_csv_parses_to_observations",
      test_valid_csv_parses_to_observations),
-    # F. dependency invariant
+    # F. dependency invariants (bidireccional)
     ("test_no_import_of_quant_bis",
      test_no_import_of_quant_bis),
+    ("test_macro_fetcher_does_not_import_bis_fetcher",
+     test_macro_fetcher_does_not_import_bis_fetcher),
     # G. end-to-end dry runs
     ("test_fetch_one_end_to_end_upserts_to_sqlite",
      test_fetch_one_end_to_end_upserts_to_sqlite),
