@@ -1,0 +1,32 @@
+{
+  "meta": {
+    "statistic": "bsadf_latest",
+    "null_hypothesis": "random walk (unit root, no bubble)",
+    "n_sim": 500,
+    "seed": 12345,
+    "old_fixed_threshold": 1.49,
+    "gsadf_source": "quant_detectors.gsadf (as-is, r0=30)",
+    "note": "crit = percentil da distribuicao nula de bsadf_latest por n",
+    "total_seconds": 5864.2
+  },
+  "critical_values": {
+    "100": {
+      "p95": 0.5428,
+      "p99": 1.3103,
+      "mean": -0.732,
+      "median": -0.7969
+    },
+    "250": {
+      "p95": 0.3522,
+      "p99": 1.0215,
+      "mean": -0.6546,
+      "median": -0.7049
+    },
+    "500": {
+      "p95": 0.702,
+      "p99": 1.2397,
+      "mean": -0.4856,
+      "median": -0.5709
+    }
+  }
+}
