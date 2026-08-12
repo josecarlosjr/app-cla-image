@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "statistic": "bsadf_latest",
+    "null_hypothesis": "random walk (unit root, no bubble)",
+    "n_sim": 2000,
+    "seed": 12345,
+    "old_fixed_threshold": 1.49,
+    "gsadf_source": "quant_detectors.gsadf (as-is, r0=30)",
+    "note": "crit = percentil da distribuicao nula de bsadf_latest por n",
+    "total_seconds": 1803.9
+  },
+  "critical_values": {
+    "250": {
+      "p95": 0.5261,
+      "p99": 1.2108,
+      "mean": -0.6046,
+      "median": -0.6805
+    }
+  }
+}
