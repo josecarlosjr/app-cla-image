@@ -35,7 +35,8 @@ for p in (_PARENT, _HERE):
 from reversal_detector import compute_reversal, CLASS_THRESHOLD  # noqa: E402
 from validate_peca3 import distinct_entries                      # noqa: E402
 from bubble_state_machine import (                               # noqa: E402
-    run_state_machine, extract_transitions, BOLHA_ATIVA, REVERSAO,
+    run_state_machine, extract_transitions, absorbed_corrections,
+    BOLHA_ATIVA, REVERSAO,
 )
 
 # Ciclos de bolha conhecidos: reversão esperada dentro destas janelas.
@@ -56,12 +57,13 @@ def align_on_p1_grid(
     ``p3_entry[i]`` = houve alguma entrada em reversão em (mês anterior, mês i].
     ``drawdown[i]`` = drawdown diário na data do mês i (ou o último prévio)."""
     ent = sorted(entry_dates)
-    dates, p1e, p3e, dd = [], [], [], []
+    dates, p1e, p3e, dd, bs = [], [], [], [], []
     prev = None
     for r in p1_rows:
         ts = date.fromisoformat(r["ts"][:10])
         dates.append(ts)
         p1e.append(bool(r.get("explosive_cal95")))
+        bs.append(r.get("bsadf_latest"))
         lo = prev if prev is not None else date.min
         p3e.append(any(lo < d <= ts for d in ent))
         if ts in drawdown_by_date:
@@ -70,7 +72,7 @@ def align_on_p1_grid(
             priors = [d for d in drawdown_by_date if d <= ts]
             dd.append(drawdown_by_date[max(priors)] if priors else 0.0)
         prev = ts
-    return dates, p1e, p3e, dd
+    return dates, p1e, p3e, dd, bs
 
 
 def assess_cycles(transitions: list[dict]) -> dict:
@@ -113,6 +115,10 @@ def report(transitions: list[dict], states: list[dict], a: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--table", default="research_btc",
+                    choices=["research_btc", "research_eth"],
+                    help="tabela cripto (ETH = teste de generalizacao; "
+                         "MESMO threshold/crit, NAO re-afinar)")
     ap.add_argument("--start", type=int, default=2014)
     ap.add_argument("--step", type=int, default=21)
     args = ap.parse_args()
@@ -121,8 +127,8 @@ def main() -> int:
     from gsadf_calibrated import (
         load_critical_values, walk_forward_calibrated)
 
-    dates, closes = load_series("research_btc", args.start)
-    print(f"research_btc: {len(closes)} barras {dates[0]}..{dates[-1]}",
+    dates, closes = load_series(args.table, args.start)
+    print(f"{args.table}: {len(closes)} barras {dates[0]}..{dates[-1]}",
           flush=True)
 
     table = load_critical_values()
@@ -136,12 +142,19 @@ def main() -> int:
                   for r in p3_rows}
     ent_dates = [date.fromisoformat(e["ts"][:10]) for e in entries]
 
-    # Alinhar + Peça 2
-    al_dates, p1e, p3e, dd = align_on_p1_grid(p1_rows, dd_by_date, ent_dates)
-    states = run_state_machine(al_dates, p1e, p3e, dd)
+    # Alinhar + Peça 2 (com bsadf p/ o refinamento C)
+    al_dates, p1e, p3e, dd, bs = align_on_p1_grid(
+        p1_rows, dd_by_date, ent_dates)
+    states = run_state_machine(al_dates, p1e, p3e, dd, bs)
     trans = extract_transitions(states)
     a = assess_cycles(trans)
     report(trans, states, a)
+
+    absorbed = absorbed_corrections(states)
+    print(f"\nCorreções de meio-ciclo absorvidas (Peça3 disparou mas GSADF "
+          f"ainda vivo → manteve BOLHA_ATIVA): {len(absorbed)}")
+    for d in absorbed:
+        print(f"    {d}")
     return 0
 
 

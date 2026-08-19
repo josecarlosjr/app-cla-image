@@ -33,7 +33,7 @@ from gsadf_calibrated import (  # noqa: E402
     load_critical_values, walk_forward_calibrated,
 )
 
-_TABLES = {"research_gspc", "research_btc"}  # whitelist (anti-injection)
+_TABLES = {"research_gspc", "research_btc", "research_eth"}  # whitelist (anti-injection)
 
 # Bolhas de PREÇO conhecidas: (label, tabela, pico). Run-up = [pico-12m, pico].
 BUBBLES = [
