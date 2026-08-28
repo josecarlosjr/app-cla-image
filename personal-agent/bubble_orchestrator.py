@@ -162,17 +162,27 @@ def _load_approved_graph() -> dict:
         return {"entities": [], "relationships": []}
 
 
-def _credit_gaps() -> dict[str, float]:
-    """Latest BIS credit-to-GDP gap per country series, safe."""
+def _us_credit_gap() -> float | None:
+    """Latest US BIS credit-to-GDP gap, from the SQLite macro catalog.
+
+    The BIS data lives in ``macro_indicators`` (Onda 12 C1), keyed
+    lowercase (``bis_credit_gap_us``) — NOT in the quant Postgres, which
+    has zero BIS rows (that was the CRED=0.00 bug: the orchestrator read
+    the empty Postgres). A negative gap (deleveraging) is REAL data
+    (credit_signal -> score 0, conf 0.7, "sem froth de crédito"), not
+    missing data; only a true absence returns None (signal abstains).
+    US-only for now — the watchlist is US-listed; multi-país é o passo
+    seguinte.
+    """
     try:
-        import pg_database as pg
-        gaps = pg.get_latest_by_prefix("BIS_CREDIT_GAP_")
-        return {k: float(v["value"]) for k, v in gaps.items()}
+        import macro_repository as mr
+        row = mr.get_latest("bis_credit_gap_us")
+        return float(row["value"]) if row is not None else None
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "credit gap unavailable (%s); credit signal abstains", e,
         )
-        return {}
+        return None
 
 
 def _graph_edges(ticker: str, graph: dict) -> list[str]:
@@ -206,8 +216,9 @@ def gather_and_score() -> dict:
     accel = _accel_by_category()
     graph = _load_approved_graph()
     # Credit is a macro backdrop; the watchlist is US-listed (plus global
-    # crypto/gold), so every ticker gets the US credit-to-GDP gap.
-    us_credit_gap = _credit_gaps().get("BIS_CREDIT_GAP_US")
+    # crypto/gold), so every ticker gets the US credit-to-GDP gap (SQLite
+    # macro catalog — the Postgres BIS series is empty).
+    us_credit_gap = _us_credit_gap()
 
     rows: list[dict] = []
     for w in watchlist:
