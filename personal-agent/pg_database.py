@@ -357,6 +357,16 @@ def get_watchlist() -> list[dict]:
     trip. Each CTE uses DISTINCT ON to fetch the closest matching row
     per ticker — sub-millisecond on the (ticker, ts DESC) hypertable
     index.
+
+    Each bar/valuation CTE carries a uniform ``ts > now() - 180 days``
+    lower bound: without it the DISTINCT ON scans every chunk of the
+    quant_bars hypertable (5000+), which OOM'd Postgres under lock
+    pressure. The bound lets TimescaleDB exclude all but the ~26 recent
+    chunks at planning time. It touches only *which rows are scanned*,
+    not the result: the latest/prev/30d-ago bars all live well inside
+    180 days for any actively-ingested ticker. Trade-off (accepted): a
+    ticker with no bar in 180 days drops from the dashboard — correct,
+    since a 6-month-old price is not "current".
     """
     with connect() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -364,6 +374,7 @@ def get_watchlist() -> list[dict]:
                 SELECT DISTINCT ON (ticker)
                     ticker, ts, close
                 FROM quant_bars
+                WHERE ts > now() - INTERVAL '180 days'
                 ORDER BY ticker, ts DESC
             ),
             prev_bar AS (
@@ -372,6 +383,7 @@ def get_watchlist() -> list[dict]:
                 FROM quant_bars b
                 JOIN latest_bar l ON b.ticker = l.ticker
                 WHERE b.ts < l.ts
+                  AND b.ts > now() - INTERVAL '180 days'
                 ORDER BY b.ticker, b.ts DESC
             ),
             bar_30d_ago AS (
@@ -380,12 +392,14 @@ def get_watchlist() -> list[dict]:
                 FROM quant_bars b
                 JOIN latest_bar l ON b.ticker = l.ticker
                 WHERE b.ts <= l.ts - INTERVAL '30 days'
+                  AND b.ts > now() - INTERVAL '180 days'
                 ORDER BY b.ticker, b.ts DESC
             ),
             latest_val AS (
                 SELECT DISTINCT ON (ticker)
                     ticker, pe, market_cap
                 FROM quant_valuations
+                WHERE ts > now() - INTERVAL '180 days'
                 ORDER BY ticker, ts DESC
             )
             SELECT
