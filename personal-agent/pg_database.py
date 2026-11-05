@@ -462,25 +462,94 @@ def get_bar_counts(tickers: list[str]) -> dict[str, int]:
         return {r["ticker"]: int(r["n"]) for r in cur.fetchall()}
 
 
+def _bis_credit_from_sqlite() -> dict:
+    """BIS credit-to-GDP **gap + ratio** per country, from the SQLite
+    macro catalog.
+
+    The canonical BIS series live in ``macro_indicators`` (Onda 12 C1),
+    keyed lowercase — ``bis_credit_gap_{cty}`` /
+    ``bis_credit_ratio_{cty}``, 14 countries, 1980-> .
+
+    The quant Postgres also carries a BIS slice, written by the older
+    ``quant_bis`` cron under ``BIS_CREDIT_GAP_{CTY}``: 9 countries
+    (US,PT,BR,GB,DE,FR,ES,CN,JP), gap only, from 2000. The panel used to
+    read that one — so it worked, but showed 9 of 14 countries and no
+    ratio. Reading the SQLite catalog instead gives all 14 plus the
+    ratio and the deeper history, and consolidates on the single
+    canonical source (same direction as PR #77 for the bubble
+    orchestrator).
+
+    Returns ``{CTY: {ts, value, series, ratio, ratio_ts, ratio_series}}``
+    keyed by UPPERCASE ISO, matching the HPI convention
+    (``EUROSTAT_HPI_PT`` -> ``PT``).
+
+    ``ts`` / ``value`` / ``series`` stay the **gap** — preserving the
+    ``QuantLatestPoint`` contract the frontend already renders — and the
+    ratio rides alongside with its **own** ts/series, so the UI can show
+    the absolute level next to the trend deviation and date each source
+    independently (BIS is Q1-2026 while HPI/BPstat are Q2-2026).
+
+    A country with no gap row is omitted (it is the gap table); a
+    missing ratio simply leaves those keys out. Never raises — on
+    failure the panel renders without credit rows instead of 500-ing.
+    """
+    try:
+        import macro_repository as mr
+
+        start = (
+            datetime.now(timezone.utc) - timedelta(days=_MACRO_SERIES_DAYS)
+        ).date().isoformat()
+        latest = mr.get_latest_all()
+
+        def _points(indicator: str) -> list[dict]:
+            return mr.get_timeseries(indicator, start=start)["points"]
+
+        gap_prefix, ratio_prefix = "bis_credit_gap_", "bis_credit_ratio_"
+        out: dict = {}
+        for ind, rec in latest.items():
+            if ind.startswith(gap_prefix):
+                out[ind[len(gap_prefix):].upper()] = {
+                    "ts": rec["ts"],
+                    "value": rec["value"],
+                    "series": _points(ind),
+                }
+        for ind, rec in latest.items():
+            if not ind.startswith(ratio_prefix):
+                continue
+            cty = ind[len(ratio_prefix):].upper()
+            if cty not in out:
+                continue        # sem gap -> fora da tabela do gap
+            out[cty]["ratio"] = rec["value"]
+            out[cty]["ratio_ts"] = rec["ts"]
+            out[cty]["ratio_series"] = _points(ind)
+        return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "BIS credit (SQLite) unavailable (%s); macro-risk credit empty", e,
+        )
+        return {}
+
+
 def _build_macro_risk() -> dict:
-    """Latest + ~7y series for credit gap (BIS), HPI (Eurostat),
-    BPstat. All three sources write into quant_indicators with
-    distinct id prefixes, so the country/series set is whatever the
-    ingesters produced.
+    """Latest + ~7y series for credit gap/ratio (BIS), HPI (Eurostat),
+    BPstat.
+
+    Cross-source by nature: HPI and BPstat are written into the quant
+    ``quant_indicators`` (Postgres) by their ingesters, while the BIS
+    series live in the SQLite macro catalog — see
+    ``_bis_credit_from_sqlite``. The country/series set is whatever each
+    ingester produced.
 
     Each entry carries the latest point AND the recent time series
     (for sparklines), plus a y-o-y % for the HPI/BPstat momentum
-    gauge. Series come back from a single batch query per source so
-    the dashboard payload is built in O(3) round trips instead of
-    O(series_count).
+    gauge. HPI/BPstat series come back from a single batch query per
+    source so the Postgres side stays at O(2) round trips.
     """
-    credit_raw = get_latest_by_prefix("BIS_CREDIT_GAP_")
+    credit_gap = _bis_credit_from_sqlite()
+
     hpi_raw = get_latest_by_prefix("EUROSTAT_HPI_")
     bpstat_raw = get_latest_by_prefix("BPSTAT_")
 
-    credit_series = get_indicators_series_batch(
-        list(credit_raw.keys()), _MACRO_SERIES_DAYS,
-    )
     hpi_series = get_indicators_series_batch(
         list(hpi_raw.keys()), _MACRO_SERIES_DAYS,
     )
@@ -488,13 +557,6 @@ def _build_macro_risk() -> dict:
         list(bpstat_raw.keys()), _MACRO_SERIES_DAYS,
     )
 
-    credit_gap = {
-        sid.replace("BIS_CREDIT_GAP_", ""): {
-            **rec,
-            "series": credit_series.get(sid, []),
-        }
-        for sid, rec in credit_raw.items()
-    }
     hpi = {
         sid.replace("EUROSTAT_HPI_", ""): {
             **rec,
