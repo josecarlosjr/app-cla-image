@@ -291,6 +291,50 @@ def get_yoy_change(series_id: str) -> float | None:
     return (float(r["now"]) - past) / past * 100.0
 
 
+def yoy_from_series(points: list[dict]) -> float | None:
+    """``get_yoy_change`` computed in Python from an already-fetched series.
+
+    Same rule, same answer, zero extra round trips: take the last
+    point, then the newest point at or before ``latest.ts - 12
+    months``. A caller that already holds the full series (the country
+    detail does) would otherwise pay a whole extra connection + another
+    full hypertable scan per series just to re-read two rows it has in
+    hand.
+
+    Kept next to ``get_yoy_change`` on purpose: the two must not drift.
+    The month arithmetic mirrors Postgres's ``- INTERVAL '12 months'``,
+    which clamps 29 Feb to 28 Feb rather than rolling into March.
+
+    The one case where this can differ from the SQL: if the caller's
+    series window is narrower than 12 months + the gap to the previous
+    observation, the past point falls outside it and this returns None
+    where the (unbounded) SQL would have found it. Callers fetch
+    decades, so that does not arise.
+
+    ``points`` must be ascending by ts, as every reader here returns.
+    """
+    if len(points) < 2:
+        return None
+    try:
+        latest = points[-1]
+        latest_ts = datetime.fromisoformat(latest["ts"])
+        try:
+            cutoff = latest_ts.replace(year=latest_ts.year - 1)
+        except ValueError:                      # 29 Feb -> 28 Feb
+            cutoff = latest_ts.replace(year=latest_ts.year - 1, day=28)
+
+        past = None
+        for p in reversed(points[:-1]):
+            if datetime.fromisoformat(p["ts"]) <= cutoff:
+                past = float(p["value"])
+                break
+        if past is None or past == 0:
+            return None
+        return (float(latest["value"]) - past) / past * 100.0
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def get_latest_features_by_target() -> dict[str, dict]:
     """Latest LPPL + GSADF feature value per ticker.
 

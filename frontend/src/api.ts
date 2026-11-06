@@ -358,9 +358,17 @@ export type MacroCountryPoint = {
 export type MacroCountryHpi = MacroCountryPoint & {
   yoy_pct: number | null;
 };
+// `unit` is "%" for a series that IS a rate (BPstat 5739035, the
+// year-on-year change) and "" for an index level. It comes from the
+// backend rather than being inferred here so the axis, the tooltip and
+// the headline can't disagree about what the number means.
+//
+// `yoy_pct` is null for a series that is already a year-on-year: a
+// y-o-y of a y-o-y is the change OF a change, not a price move.
 export type MacroCountryBpstat = MacroCountryHpi & {
   series_id: string;
   label: string;
+  unit: string;
 };
 
 export type MacroCountryDetail = {

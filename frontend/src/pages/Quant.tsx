@@ -490,7 +490,13 @@ function DrawerChart({
             stroke="#ef4444"
             strokeDasharray="4 2"
             label={{
-              value: "2008",
+              // A temporal ruler, NOT a peak marker. Each country's
+              // credit cycle peaks on its own date — PT's gap tops out
+              // at +35.4 in 2001-09 (post-euro expansion), not 2008 —
+              // so labelling this "pico" would be wrong for most of
+              // the 14. It is here so the countries can be read
+              // against one common reference.
+              value: "2008 — crise financeira global",
               fill: "#ef4444",
               fontSize: 10,
               position: "top",
@@ -737,16 +743,17 @@ function CountryDrawer({
                   title={`BPstat — ${b.label}`}
                   note={`Banco de Portugal, série ${b.series_id}. Último: ${b.value.toFixed(
                     2,
-                  )} (${formatQuarter(b.ts)}).`}
+                  )}${b.unit} (${formatQuarter(b.ts)}).`}
                 >
                   <DrawerChart
                     series={b.series}
                     color="#8b5cf6"
-                    unit=""
+                    unit={b.unit}
                     refLines={
-                      // The TVH series is already a % change, so zero is
-                      // the meaningful line; the level series is an index.
-                      b.series_id === "5739035"
+                      // A rate series (unit "%") crosses zero, and zero
+                      // is the line that matters; an index level does
+                      // not, so it gets no reference line.
+                      b.unit === "%"
                         ? [{
                             y: 0,
                             label: "0% (sem variação)",

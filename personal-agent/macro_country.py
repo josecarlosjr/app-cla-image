@@ -39,16 +39,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# BIS is quarterly from 1980; Eurostat HPI and BPstat both start in the
-# 2000s. 50 years is "everything either source could hold" while still
-# being a finite lower bound on the hypertable query, so the planner
-# keeps the same shape of plan ``get_indicator_series`` is already
-# tuned for. Safe on quant_indicators specifically: the dashboard
-# already runs two UNBOUNDED ``get_latest_by_prefix`` DISTINCT ON scans
-# over this same table on every load, so a single-series range scan
-# here is strictly less work than what production does today. (The
-# 5145-chunk OOM was ``quant_bars``, a far bigger hypertable.)
-_FULL_HISTORY_DAYS = 365 * 50
+# Lower bound for the housing series on quant_indicators. Eurostat HPI
+# starts 2005 and BPstat ~2009, so 30 years covers both in full with
+# years of margin, while still excluding every older chunk of a
+# hypertable that also holds FRED dailies going back decades.
+#
+# This window is the tuning lever if the Postgres side ever gets slow
+# again: it trades history nobody has for chunks the planner can skip.
+# Narrowing it below ~2005 would start clipping real HPI history.
+_HOUSING_SERIES_DAYS = 365 * 30
 
 _GAP_PREFIX = "bis_credit_gap_"
 _RATIO_PREFIX = "bis_credit_ratio_"
@@ -60,9 +59,25 @@ _RATIO_PREFIX = "bis_credit_ratio_"
 # has verified what 12559646/47 actually measure. An unlabelled series
 # in a detail view would be read as meaning something, so they are left
 # out rather than shown with a guessed label.
-_BPSTAT_PT: tuple[tuple[str, str], ...] = (
-    ("12559645", "Índice de preços da habitação — Total (nível)"),
-    ("5739035", "Índice de preços da habitação — Total (variação homóloga %)"),
+#
+# ``yoy``: whether a year-on-year makes sense for this series. 5739035
+# IS already the year-on-year change (TVH), so running the y-o-y rule
+# over it yields the change OF a change — a reading of +16.5% came back
+# as -4.07%, which next to the HPI's +16.48% reads as "prices fell".
+# Its ``value`` is the correct year-on-year figure; ``yoy_pct`` is
+# reported as None rather than a number that means something else.
+#
+# ``unit``: carried in the payload because the same confusion bites the
+# axis and the headline. 12559645 is an index (bare number); 5739035 is
+# a rate, and rendering it as "0.97" instead of "0.97%" invites exactly
+# the misreading above.
+_BPSTAT_PT: tuple[dict, ...] = (
+    {"id": "12559645",
+     "label": "Índice de preços da habitação — Total (nível)",
+     "yoy": True, "unit": ""},
+    {"id": "5739035",
+     "label": "Índice de preços da habitação — Total (variação homóloga %)",
+     "yoy": False, "unit": "%"},
 )
 
 
@@ -101,6 +116,23 @@ def _bis_block(indicator: str) -> dict | None:
 def _housing_blocks(code: str) -> dict:
     """Eurostat HPI + (PT only) BPstat, from the quant Postgres.
 
+    ONE round trip for every series this country has.
+
+    That matters more than it looks. ``pg_database.connect()`` opens a
+    short-lived connection per call and there is no pool, so each
+    helper call costs a connection AND a fresh scan of a hypertable
+    that holds FRED dailies going back decades. Measured in-pod on the
+    first cut, which called ``get_indicator_series`` + ``get_yoy_change``
+    per series: US (1 call) 0.257s, PT (5 calls) 1.143s — ~0.22s of
+    marginal cost per call, all of it Postgres (the SQLite BIS half of
+    the payload is 0.002s).
+
+    So: one batched, time-bounded query for every id at once, and the
+    y-o-y computed from the series already in hand
+    (``pg_database.yoy_from_series``, the in-Python twin of
+    ``get_yoy_change`` — same rule, same number as the dashboard
+    table) instead of a second scan per series.
+
     Never raises: on any failure — driver missing, Postgres down, a
     series absent — the country detail still renders with its BIS
     charts, which are the point of the view. Returns the keys it could
@@ -108,39 +140,41 @@ def _housing_blocks(code: str) -> dict:
     """
     out: dict = {"hpi": None, "bpstat": []}
     try:
-        from pg_database import (
-            get_indicator_series,
-            get_indicators_series_batch,
-            get_yoy_change,
-        )
+        from pg_database import get_indicators_series_batch, yoy_from_series
 
         hpi_sid = f"EUROSTAT_HPI_{code}"
-        hpi_series = get_indicator_series(hpi_sid, _FULL_HISTORY_DAYS)
+        wanted = [hpi_sid]
+        if code == "PT":
+            wanted += [f"BPSTAT_{s['id']}" for s in _BPSTAT_PT]
+
+        batch = get_indicators_series_batch(wanted, _HOUSING_SERIES_DAYS)
+
+        hpi_series = batch.get(hpi_sid) or []
         if hpi_series:
             last = hpi_series[-1]
             out["hpi"] = {
                 "ts": last["ts"],
                 "value": last["value"],
-                # Same helper the dashboard table uses, so the number in
-                # the drawer and the number in the panel agree.
-                "yoy_pct": get_yoy_change(hpi_sid),
+                "yoy_pct": yoy_from_series(hpi_series),
                 "series": hpi_series,
             }
 
         if code == "PT":
-            sids = [f"BPSTAT_{sid}" for sid, _ in _BPSTAT_PT]
-            batch = get_indicators_series_batch(sids, _FULL_HISTORY_DAYS)
-            for sid, label in _BPSTAT_PT:
-                series = batch.get(f"BPSTAT_{sid}", [])
+            for spec in _BPSTAT_PT:
+                series = batch.get(f"BPSTAT_{spec['id']}") or []
                 if not series:
                     continue
                 last = series[-1]
                 out["bpstat"].append({
-                    "series_id": sid,
-                    "label": label,
+                    "series_id": spec["id"],
+                    "label": spec["label"],
+                    "unit": spec["unit"],
                     "ts": last["ts"],
                     "value": last["value"],
-                    "yoy_pct": get_yoy_change(f"BPSTAT_{sid}"),
+                    # None where the series IS the y-o-y — see _BPSTAT_PT.
+                    "yoy_pct": (
+                        yoy_from_series(series) if spec["yoy"] else None
+                    ),
                     "series": series,
                 })
     except ImportError as e:
@@ -167,8 +201,8 @@ def get_country_detail(code: str) -> dict | None:
          "credit_gap":   {ts, value, series: [{ts, value}, ...]} | null,
          "credit_ratio": {ts, value, series: [...]}              | null,
          "hpi":          {ts, value, yoy_pct, series: [...]}     | null,
-         "bpstat":       [{series_id, label, ts, value, yoy_pct,
-                           series: [...]}, ...]}
+         "bpstat":       [{series_id, label, unit, ts, value,
+                           yoy_pct, series: [...]}, ...]}
 
     ``series`` (not ``points``) so the shape matches the
     ``QuantSeriesPoint[]`` the frontend charts already consume.
