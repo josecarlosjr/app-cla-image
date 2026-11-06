@@ -41,12 +41,15 @@ logger = logging.getLogger(__name__)
 
 # Lower bound for the housing series on quant_indicators. Eurostat HPI
 # starts 2005 and BPstat ~2009, so 30 years covers both in full with
-# years of margin, while still excluding every older chunk of a
-# hypertable that also holds FRED dailies going back decades.
+# years of margin. Narrowing it below ~2005 would clip real history.
 #
-# This window is the tuning lever if the Postgres side ever gets slow
-# again: it trades history nobody has for chunks the planner can skip.
-# Narrowing it below ~2005 would start clipping real HPI history.
+# It is NOT a performance lever here, contrary to what the first cut of
+# this file claimed. Measured in-pod: quant_indicators holds 146 chunks
+# (quant_bars, the one that OOM'd in PR #78, had 5145), the query runs
+# in ~10 ms, and 30y / 50y / 200y all take the same time with ZERO
+# chunks excluded. The ~0.19 s that remains per country is connection
+# overhead — ``connect()`` has no pool — which is a separate ticket, not
+# something this window can touch.
 _HOUSING_SERIES_DAYS = 365 * 30
 
 _GAP_PREFIX = "bis_credit_gap_"
@@ -119,19 +122,23 @@ def _housing_blocks(code: str) -> dict:
     ONE round trip for every series this country has.
 
     That matters more than it looks. ``pg_database.connect()`` opens a
-    short-lived connection per call and there is no pool, so each
-    helper call costs a connection AND a fresh scan of a hypertable
-    that holds FRED dailies going back decades. Measured in-pod on the
-    first cut, which called ``get_indicator_series`` + ``get_yoy_change``
-    per series: US (1 call) 0.257s, PT (5 calls) 1.143s — ~0.22s of
-    marginal cost per call, all of it Postgres (the SQLite BIS half of
-    the payload is 0.002s).
+    short-lived connection per call and there is no pool. The first cut
+    of this function called ``get_indicator_series`` + ``get_yoy_change``
+    per series and measured, in-pod: US (1 call) 0.257s, PT (5 calls)
+    1.143s — ~0.22s of marginal cost per call, against 0.002s for the
+    whole SQLite half of the payload.
 
-    So: one batched, time-bounded query for every id at once, and the
-    y-o-y computed from the series already in hand
-    (``pg_database.yoy_from_series``, the in-Python twin of
-    ``get_yoy_change`` — same rule, same number as the dashboard
-    table) instead of a second scan per series.
+    Almost all of that is the connection, not the query: the same
+    measurement found quant_indicators at 146 chunks with the query
+    itself at ~10 ms. So the fix is to stop making five of them — one
+    batched query for every id at once, and the y-o-y computed from
+    the series already in hand (``pg_database.yoy_from_series``, the
+    in-Python twin of ``get_yoy_change`` — same rule, same number as
+    the dashboard table) instead of a second round trip per series.
+
+    Result in-pod: 1.07s -> 0.197s average across the 14, one
+    connection per country. The ~0.19s floor that remains is one
+    connection setup and belongs to the pooling ticket.
 
     Never raises: on any failure — driver missing, Postgres down, a
     series absent — the country detail still renders with its BIS
