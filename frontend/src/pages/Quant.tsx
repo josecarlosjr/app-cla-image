@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import {
   api,
+  MacroCountryDetail,
   QuantDashboard,
   QuantMacroRisk,
   QuantSeriesPoint,
@@ -38,6 +39,23 @@ function formatDateLong(iso: string): string {
 function formatPct(v: number | null | undefined): string {
   if (v === null || v === undefined) return "—";
   return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
+}
+
+// Year-only axis label. The ~7y sparklines can use formatDate, but the
+// country-detail charts span 1980-> (~184 quarterly points) where
+// "31 mar" is noise and the year is the whole story.
+function formatYear(iso: string): string {
+  return iso.substring(0, 4);
+}
+
+// "2026-03-31" -> "Q1 2026". BIS/Eurostat/BPstat are all quarterly and
+// stamped at quarter end, so the quarter is the honest unit to show
+// next to a value — not a day that suggests daily precision.
+function formatQuarter(iso: string): string {
+  const [y, m] = iso.split("-");
+  const month = Number(m);
+  if (!y || !month) return iso;
+  return `Q${Math.ceil(month / 3)} ${y}`;
 }
 
 function formatCap(v: number | null | undefined): string {
@@ -384,10 +402,396 @@ function EmptyChart() {
 }
 
 // ---------------------------------------------------------------------------
+// Country detail drawer (Onda 13 multi-pais, Camada B)
+// ---------------------------------------------------------------------------
+//
+// Opened from a row of the BIS credit table. Lives in a right-side
+// overlay rather than expanding inline on purpose: the table has to
+// stay visible so one country can be read against the others.
+//
+// Data comes from GET /api/macro/country/{code} on open — the full
+// 1980-> history is NOT in the dashboard payload (see MacroCountryDetail
+// in api.ts).
+
+const COUNTRY_NAMES: Record<string, string> = {
+  AU: "Austrália", BR: "Brasil", CA: "Canadá", CN: "China",
+  DE: "Alemanha", ES: "Espanha", FR: "França", GB: "Reino Unido",
+  IN: "Índia", IT: "Itália", JP: "Japão", KR: "Coreia do Sul",
+  PT: "Portugal", US: "Estados Unidos",
+};
+
+// The 2008 marker has to sit on an x value that exists in the data —
+// recharts silently draws nothing for a vertical ReferenceLine whose x
+// isn't a category in the series. So pick the first observation at or
+// after Sep-2008 (Lehman) and use its exact ts; undefined when the
+// series doesn't reach 2008, in which case no line is drawn.
+function crisisTick(series: QuantSeriesPoint[]): string | undefined {
+  const hit = series.find((p) => p.ts.substring(0, 10) >= "2008-09-01");
+  return hit?.ts.substring(0, 10);
+}
+
+function toChart(series: QuantSeriesPoint[]) {
+  return series.map((p) => ({ ts: p.ts.substring(0, 10), value: p.value }));
+}
+
+function DrawerChart({
+  series,
+  color,
+  unit,
+  refLines,
+  crisisTs,
+}: {
+  series: QuantSeriesPoint[];
+  color: string;
+  unit: string;
+  // `side` is a recharts inside-* position on purpose: an outside label
+  // either collides with the Y-axis ticks (left) or is clipped by the
+  // container (right) once the text is long enough to be useful.
+  refLines?: {
+    y: number;
+    label: string;
+    stroke: string;
+    side: "insideTopRight" | "insideBottomLeft" | "insideTopLeft";
+  }[];
+  crisisTs?: string;
+}) {
+  const data = toChart(series);
+  if (data.length < 2) {
+    return (
+      <div className="h-[220px] flex items-center justify-center text-sm text-slate-500">
+        Série sem dados suficientes.
+      </div>
+    );
+  }
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <LineChart data={data} margin={{ top: 16, right: 16, bottom: 0, left: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <XAxis
+          dataKey="ts"
+          tickFormatter={formatYear}
+          stroke="#94a3b8"
+          fontSize={11}
+          minTickGap={28}
+        />
+        <YAxis
+          stroke="#94a3b8"
+          fontSize={11}
+          tickFormatter={(v) => `${Number(v).toFixed(0)}${unit}`}
+        />
+        <Tooltip
+          contentStyle={TOOLTIP_STYLE}
+          labelFormatter={(l: any) => formatQuarter(String(l))}
+          formatter={(v: any) => `${Number(v).toFixed(2)}${unit}`}
+        />
+        {crisisTs && (
+          <ReferenceLine
+            x={crisisTs}
+            stroke="#ef4444"
+            strokeDasharray="4 2"
+            label={{
+              // A temporal ruler, NOT a peak marker. Each country's
+              // credit cycle peaks on its own date — PT's gap tops out
+              // at +35.4 in 2001-09 (post-euro expansion), not 2008 —
+              // so labelling this "pico" would be wrong for most of
+              // the 14. It is here so the countries can be read
+              // against one common reference.
+              value: "2008 — crise financeira global",
+              fill: "#ef4444",
+              fontSize: 10,
+              position: "top",
+            }}
+          />
+        )}
+        {(refLines || []).map((r) => (
+          <ReferenceLine
+            key={r.label}
+            y={r.y}
+            stroke={r.stroke}
+            strokeDasharray="3 3"
+            label={{
+              value: r.label,
+              fill: r.stroke,
+              fontSize: 10,
+              position: r.side,
+            }}
+          />
+        ))}
+        <Line
+          type="monotone"
+          dataKey="value"
+          stroke={color}
+          dot={false}
+          strokeWidth={2}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+function DrawerSection({
+  title,
+  note,
+  children,
+}: {
+  title: string;
+  note?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <h3 className="text-xs uppercase tracking-wider text-slate-400">
+        {title}
+      </h3>
+      {note && <p className="text-[11px] text-slate-500 mt-0.5 mb-1">{note}</p>}
+      <div className="mt-2">{children}</div>
+    </div>
+  );
+}
+
+function CountryDrawer({
+  code,
+  onClose,
+}: {
+  code: string;
+  onClose: () => void;
+}) {
+  const [detail, setDetail] = useState<MacroCountryDetail | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  // Esc closes. Bound to document (not the panel) so it works before
+  // anything inside has focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setError("");
+    setDetail(null);
+    api
+      .get<MacroCountryDetail>(`/macro/country/${code}`)
+      .then((r) => {
+        if (alive) setDetail(r.data);
+      })
+      .catch((e: any) => {
+        if (alive) {
+          setError(
+            e?.response?.data?.detail || e?.message || "erro desconhecido",
+          );
+        }
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [code]);
+
+  const gap = detail?.credit_gap ?? null;
+  const ratio = detail?.credit_ratio ?? null;
+  const crisisTs = gap ? crisisTick(gap.series) : undefined;
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      {/* Backdrop — click outside closes. */}
+      <div
+        className="absolute inset-0 bg-slate-950/70"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Detalhe macro ${code}`}
+        className="relative h-full w-full max-w-2xl bg-slate-900 border-l border-slate-800 overflow-y-auto shadow-2xl"
+      >
+        <div className="sticky top-0 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-5 py-4 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-bold text-slate-100">
+              {COUNTRY_NAMES[code] || code}{" "}
+              <span className="font-mono text-slate-500 text-sm">{code}</span>
+            </h2>
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+              {gap && (
+                <span className="font-mono text-slate-200">
+                  gap {gap.value > 0 ? "+" : ""}
+                  {gap.value.toFixed(2)}%
+                  <span className="text-slate-500 text-xs ml-1">
+                    ({formatQuarter(gap.ts)})
+                  </span>
+                </span>
+              )}
+              {ratio && (
+                <span className="font-mono text-slate-200">
+                  ratio {ratio.value.toFixed(2)}%
+                  <span className="text-slate-500 text-xs ml-1">
+                    ({formatQuarter(ratio.ts)})
+                  </span>
+                </span>
+              )}
+              {!loading && !gap && !ratio && !error && (
+                <span className="text-slate-500 text-xs">
+                  Sem dados BIS para este país.
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Fechar"
+            className="text-slate-400 hover:text-slate-100 text-xl leading-none px-2 shrink-0"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="px-5 py-5 space-y-7">
+          {loading && (
+            <div className="h-40 flex items-center justify-center text-sm text-slate-500">
+              Carregando série completa…
+            </div>
+          )}
+
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/40 rounded-lg p-3 text-sm text-red-400">
+              Erro ao carregar o detalhe: {error}
+            </div>
+          )}
+
+          {detail && (
+            <>
+              <DrawerSection
+                title="Credit-to-GDP gap (BIS)"
+                note="Desvio, em pontos percentuais do PIB, face à tendência HP-filtrada do crédito. Série completa."
+              >
+                {gap ? (
+                  <DrawerChart
+                    series={gap.series}
+                    color="#f59e0b"
+                    unit="%"
+                    crisisTs={crisisTs}
+                    refLines={[
+                      {
+                        y: 2,
+                        label: "+2% trigger CCyB (Basel III)",
+                        stroke: "#ef4444",
+                        side: "insideTopRight",
+                      },
+                      {
+                        y: 0,
+                        label: "0 = tendência de longo prazo",
+                        stroke: "#64748b",
+                        side: "insideBottomLeft",
+                      },
+                    ]}
+                  />
+                ) : (
+                  <p className="text-sm text-slate-500">Sem dados.</p>
+                )}
+              </DrawerSection>
+
+              <DrawerSection
+                title="Credit-to-GDP ratio (BIS)"
+                note="Nível absoluto do crédito ao setor privado não financeiro em % do PIB — não um desvio."
+              >
+                {ratio ? (
+                  <DrawerChart
+                    series={ratio.series}
+                    color="#3b82f6"
+                    unit="%"
+                    crisisTs={crisisTs}
+                  />
+                ) : (
+                  <p className="text-sm text-slate-500">Sem dados.</p>
+                )}
+              </DrawerSection>
+
+              {detail.hpi && (
+                <DrawerSection
+                  title="House Price Index (Eurostat, 2015=100)"
+                  note={`Nível do índice. Variação homóloga mais recente: ${formatPct(
+                    detail.hpi.yoy_pct,
+                  )} (${formatQuarter(detail.hpi.ts)}).`}
+                >
+                  <DrawerChart
+                    series={detail.hpi.series}
+                    color="#10b981"
+                    unit=""
+                    refLines={[
+                      {
+                        y: 100,
+                        label: "2015=100",
+                        stroke: "#64748b",
+                        side: "insideBottomLeft",
+                      },
+                    ]}
+                  />
+                </DrawerSection>
+              )}
+
+              {detail.bpstat.map((b) => (
+                <DrawerSection
+                  key={b.series_id}
+                  title={`BPstat — ${b.label}`}
+                  note={`Banco de Portugal, série ${b.series_id}. Último: ${b.value.toFixed(
+                    2,
+                  )}${b.unit} (${formatQuarter(b.ts)}).`}
+                >
+                  <DrawerChart
+                    series={b.series}
+                    color="#8b5cf6"
+                    unit={b.unit}
+                    refLines={
+                      // A rate series (unit "%") crosses zero, and zero
+                      // is the line that matters; an index level does
+                      // not, so it gets no reference line.
+                      b.unit === "%"
+                        ? [{
+                            y: 0,
+                            label: "0% (sem variação)",
+                            stroke: "#64748b",
+                            side: "insideBottomLeft" as const,
+                          }]
+                        : undefined
+                    }
+                  />
+                </DrawerSection>
+              ))}
+
+              <p className="text-[11px] leading-relaxed text-slate-500 border-t border-slate-800 pt-4">
+                O credit-to-GDP gap é o desvio face a uma tendência
+                HP-filtrada. Foi desenhado para detetar EXCESSO (gaps
+                positivos &gt;2% = trigger Basel III). Gaps muito negativos
+                refletem desalavancagem e o endpoint bias do filtro HP — não
+                medem segurança. BIS: dados trimestrais, publicação T+90.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Macro-risk panel (Phase A integration + Phase B sparklines)
 // ---------------------------------------------------------------------------
 
 function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
+  // Which country's detail drawer is open, if any. Kept here (not on the
+  // page) so the diff stays local; the drawer itself is `fixed`/z-50 so
+  // it escapes the panel's layout regardless.
+  const [openCountry, setOpenCountry] = useState<string | null>(null);
+  const closeDrawer = useCallback(() => setOpenCountry(null), []);
+
   const creditEntries = Object.entries(data.credit_gap).sort();
   const hpiEntries = Object.entries(data.hpi).sort();
   const bpstatEntries = Object.entries(data.bpstat).sort();
@@ -421,6 +825,9 @@ function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
           <div>
             <h3 className="text-xs uppercase tracking-wider text-slate-400 mb-2">
               Credit-to-GDP gap (BIS)
+              <span className="normal-case tracking-normal text-slate-500 ml-2">
+                — clique num país para a série completa
+              </span>
             </h3>
             <table className="w-full text-sm">
               <thead>
@@ -437,7 +844,17 @@ function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
                   return (
                     <tr
                       key={country}
-                      className="border-b border-slate-800/50 hover:bg-slate-800/30"
+                      onClick={() => setOpenCountry(country)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setOpenCountry(country);
+                        }
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Abrir detalhe de ${country}`}
+                      className="border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer focus:outline-none focus:bg-slate-800/50"
                     >
                       <td className="py-2 font-mono text-slate-200">
                         {country}
@@ -571,6 +988,10 @@ function MacroRiskPanel({ data }: { data: QuantMacroRisk }) {
             </tbody>
           </table>
         </div>
+      )}
+
+      {openCountry && (
+        <CountryDrawer code={openCountry} onClose={closeDrawer} />
       )}
     </Panel>
   );

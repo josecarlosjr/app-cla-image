@@ -977,6 +977,31 @@ async def get_macro_latest():
     return {"indicators": mr_local.get_freshness()}
 
 
+# Per-country detail (Onda 13 multi-pais, Camada B). On-demand only —
+# the Quant dashboard panel keeps its ~7y sparklines and this is hit
+# when one country row is opened, so the full 1980-> history never
+# rides along in /api/quant/dashboard. Cross-source assembly lives in
+# macro_country (BIS from SQLite, housing from the quant Postgres,
+# the latter degrading to absent rather than failing the request).
+
+@app.get("/api/macro/country/{code}")
+async def get_macro_country(code: str):
+    """Full BIS credit-to-GDP history for one country + housing series.
+
+    Returns ``{country, credit_gap, credit_ratio, hpi, bpstat}`` — see
+    ``macro_country.get_country_detail``. Unknown country code -> 404.
+    """
+    from macro_country import get_country_detail
+    try:
+        detail = get_country_detail(code)
+    except Exception as e:
+        logger.error("Macro country detail %s failed: %s", code, e)
+        raise HTTPException(500, f"country detail failed: {e}")
+    if detail is None:
+        raise HTTPException(404, f"unknown BIS country {code!r}")
+    return detail
+
+
 # ---------------------------------------------------------------------------
 # Entry point for standalone testing
 # ---------------------------------------------------------------------------
