@@ -339,6 +339,38 @@ export type QuantMacroRisk = {
   bpstat: Record<string, QuantHpiPoint>;
 };
 
+// Per-country detail — Onda 13 multi-pais, Camada B. Served on demand
+// by GET /api/macro/country/{code} when a country row in the macro-risk
+// panel is opened; deliberately NOT part of QuantDashboard, so the full
+// 1980-> history (~184 quarterly points per series) never rides along
+// in the dashboard payload.
+//
+// `series` is required here (unlike QuantLatestPoint, where it was
+// additive): this endpoint shipped with it from the start, and the
+// charts have nothing to draw without it. A block is `null` when the
+// country is valid but that series has no rows — the drawer says so
+// rather than rendering an empty chart.
+export type MacroCountryPoint = {
+  ts: string;
+  value: number;
+  series: QuantSeriesPoint[];
+};
+export type MacroCountryHpi = MacroCountryPoint & {
+  yoy_pct: number | null;
+};
+export type MacroCountryBpstat = MacroCountryHpi & {
+  series_id: string;
+  label: string;
+};
+
+export type MacroCountryDetail = {
+  country: string;
+  credit_gap: MacroCountryPoint | null;
+  credit_ratio: MacroCountryPoint | null;
+  hpi: MacroCountryHpi | null;
+  bpstat: MacroCountryBpstat[];
+};
+
 export type QuantDashboard = {
   yield_curve: {
     T10Y3M: QuantSeriesPoint[];
