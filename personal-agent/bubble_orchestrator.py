@@ -185,6 +185,54 @@ def _us_credit_gap() -> float | None:
         return None
 
 
+def _cape_shiller() -> float | None:
+    """Latest Shiller CAPE, from the SQLite macro catalog.
+
+    Same source and shape as ``_us_credit_gap``: ``macro_indicators``
+    (Onda 12), keyed ``cape_shiller``, monthly, 1871-> . None on any
+    failure, which makes ``valuation_signal`` fall back to its
+    trailing-P/E proxy (conf 0.3) instead of crashing — exactly the
+    behaviour before this was wired up.
+    """
+    try:
+        import macro_repository as mr
+        row = mr.get_latest("cape_shiller")
+        return float(row["value"]) if row is not None else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "CAPE unavailable (%s); valuation falls back to the P/E proxy", e,
+        )
+        return None
+
+
+# Which tickers the CAPE legitimately describes.
+#
+# CAPE is the cyclically-adjusted P/E of the S&P 500 — a US large-cap
+# EQUITY multiple. Feeding it to gold, treasuries, high-yield credit or
+# crypto would assert "this is expensive" on the strength of a number
+# computed from something else entirely. Those keep cape=None and fall
+# back to the trailing-P/E proxy, which for them abstains anyway (no
+# meaningful P/E), leaving valuation at conf 0.0 — unchanged from today.
+#
+# Explicit set, not a heuristic: no inferring "equity" from the absence
+# of "-USD" or from a P/E being present. A new ticker gets no CAPE until
+# someone adds it here on purpose.
+#
+# QQQ/IWM/XLK/XLE/XLF are not the S&P itself, so this is an
+# approximation — the US equity valuation backdrop, not each index's own
+# CAPE. It is the same approximation ``credit_signal`` already makes by
+# giving every ticker the US credit-to-GDP gap, and it is why the detail
+# string says "CAPE", naming the source rather than implying it was
+# computed per ticker.
+_CAPE_TICKERS: frozenset[str] = frozenset({
+    "^GSPC",   # the S&P 500 index itself — what CAPE is actually computed on
+    "SPY",     # S&P 500 ETF
+    "QQQ",     # Nasdaq 100
+    "IWM",     # Russell 2000
+    "XLK", "XLE", "XLF",   # US sector SPDRs
+})
+
+
 def _graph_edges(ticker: str, graph: dict) -> list[str]:
     """Reuse quant_alerts' 1-2 hop walk so the Bubble Engine and the
     quant alerts see the *same* graph neighbourhood (the edge cap in
@@ -219,10 +267,14 @@ def gather_and_score() -> dict:
     # crypto/gold), so every ticker gets the US credit-to-GDP gap (SQLite
     # macro catalog — the Postgres BIS series is empty).
     us_credit_gap = _us_credit_gap()
+    # One read for the whole run: CAPE is monthly and market-wide, not
+    # per ticker. Handed only to the equity tickers (see _CAPE_TICKERS).
+    cape = _cape_shiller()
 
     rows: list[dict] = []
     for w in watchlist:
         t = w["ticker"]
+        ticker_cape = cape if t in _CAPE_TICKERS else None
         rows.append(score_ticker(
             t,
             lppl_bubble_prob=w.get("lppl_bubble_prob"),
@@ -230,11 +282,13 @@ def gather_and_score() -> dict:
             accel_ratio=temporal_ratio_for_ticker(t, accel),
             graph_edges=_graph_edges(t, graph),
             pe=w.get("pe"),
+            cape=ticker_cape,
             credit_gap_pct=us_credit_gap,
             context={
                 "close": w.get("close"),
                 "change_pct_30d": w.get("change_pct_30d"),
                 "pe": w.get("pe"),
+                "cape": ticker_cape,
                 "gsadf_explosive": w.get("gsadf_explosive", False),
             },
         ))
