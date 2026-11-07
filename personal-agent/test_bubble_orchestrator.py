@@ -15,9 +15,17 @@ from bubble_orchestrator import (
 )
 
 
-# The watchlist this engine scores (mirrors quant_yfinance.WATCHLIST /
-# quant_detectors.WATCHLIST). Hardcoded so the test fails loudly if the
-# news map drifts away from the tickers actually ingested.
+# The watchlist this engine scores (mirrors quant_detectors.WATCHLIST).
+# Hardcoded so the test fails loudly if the news map drifts away from
+# the tickers actually scored.
+#
+# It no longer mirrors quant_yfinance.WATCHLIST, which also ingests
+# ^GSPC: the S&P 500 index is ingested for its history (1927->) but is
+# deliberately NOT scored, because it is the same underlying as SPY and
+# scoring both would count the S&P twice in the ensemble. If ^GSPC ever
+# does get scored, it needs an entry here, in TICKER_NEWS_CATEGORIES and
+# in quant_detectors.WATCHLIST — and the double-counting question
+# answered first.
 _WATCHLIST = {
     "SPY", "QQQ", "IWM", "BTC-USD", "ETH-USD",
     "XLK", "XLE", "XLF", "GLD", "TLT", "HYG",

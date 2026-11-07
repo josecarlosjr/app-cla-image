@@ -33,6 +33,26 @@ logger = logging.getLogger(__name__)
 # precedes crises is visible (e.g. SPY-TLT correlation flipping
 # positive = textbook regime change).
 WATCHLIST = [
+    # ^GSPC is the S&P 500 INDEX (spot), not a fund. It is here for its
+    # history: quant_bars already holds 24765 bars back to 1927-12-30
+    # from a manual backfill, by far the deepest series in the table —
+    # SPY, the equivalent ETF, only starts in 2016. Without a daily
+    # pull that history was frozen at 2026-08-05, which is the gap this
+    # entry closes. It was never removed from this list; it was never
+    # in it.
+    #
+    # Being an index, it has no volume and no fundamentals (P/E, market
+    # cap): those columns stay NULL, which the readers already render
+    # as "—".
+    #
+    # What the deep history is NOT doing yet, to be clear: nothing
+    # reads past 252 days today. quant_detectors keeps its own
+    # WATCHLIST (which does not include ^GSPC) and a WINDOW_DAYS of
+    # 252, and backtest.py replays news/patterns, not prices. Keeping
+    # this series current is what makes a longer-window detector or a
+    # price backtest possible later — it does not by itself make the
+    # GSADF see pre-2016 bubbles.
+    "^GSPC",    # S&P 500 index, spot (1927-> ; deepest history we have)
     "SPY",      # S&P 500 ETF (broad equity)
     "QQQ",      # Nasdaq 100 ETF (tech-heavy)
     "IWM",      # Russell 2000 ETF (small caps)
