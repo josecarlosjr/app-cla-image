@@ -20,12 +20,23 @@ from bubble_orchestrator import (
 # the tickers actually scored.
 #
 # It no longer mirrors quant_yfinance.WATCHLIST, which also ingests
-# ^GSPC: the S&P 500 index is ingested for its history (1927->) but is
-# deliberately NOT scored, because it is the same underlying as SPY and
-# scoring both would count the S&P twice in the ensemble. If ^GSPC ever
-# does get scored, it needs an entry here, in TICKER_NEWS_CATEGORIES and
-# in quant_detectors.WATCHLIST — and the double-counting question
-# answered first.
+# ^GSPC.
+#
+# Correcting what an earlier version of this comment claimed: ^GSPC is
+# NOT excluded from scoring. gather_and_score iterates
+# pg.get_watchlist(), i.e. every ticker with a recent bar in
+# quant_bars — not a hardcoded list — so ^GSPC has been in
+# /api/bubble/scores since its ingestion was switched on. What its
+# absence from this set (and from quant_detectors.WATCHLIST) actually
+# means is narrower: no LPPL/GSADF features and no news categories, so
+# momentum and temporal ABSTAIN for it and its composite rests on the
+# signals that are market-wide.
+#
+# That matters because ^GSPC and SPY are the same underlying: both now
+# carry the same CAPE and the same US credit gap, so the two rows move
+# together and n_flagged can count one index twice. Giving ^GSPC a
+# news mapping here, or detector features, would deepen that — decide
+# the duplication question first.
 _WATCHLIST = {
     "SPY", "QQQ", "IWM", "BTC-USD", "ETH-USD",
     "XLK", "XLE", "XLF", "GLD", "TLT", "HYG",
