@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api, RiskDimension, RiskDimensionsPanel } from "../api";
+import { DimensionBadges, RiskDimensionsGrid } from "../components/RiskDimensions";
 
 // Local types — the Bubble Engine surface (Onda 13) is kept out of the
 // shared api.ts until it stabilises.
@@ -46,6 +47,10 @@ type ScoreRow = {
   n_signals_total: number;
   flagged: boolean;
   components: BubbleSignal[];
+  // EXPLOSIVO + STRESS for this ticker. VALUATION and CRÉDITO are
+  // market-wide and live in the header instead of repeating on all 12
+  // rows — the panel should not suggest they were measured per asset.
+  dimensions?: RiskDimension[];
   context?: {
     close: number | null;
     change_pct_30d: number | null;
@@ -62,6 +67,7 @@ type ScoresReport = {
   alerting_note: string;
   weights: Record<string, number>;
   flag_rule: { min_composite: number; min_confidence: number };
+  risk_dimensions?: RiskDimensionsPanel;
   n_tickers: number;
   n_flagged: number;
   generated_at: string;
@@ -69,10 +75,10 @@ type ScoresReport = {
 };
 
 const SIGNALS: { name: string; label: string; title: string }[] = [
-  { name: "momentum", label: "Mom.", title: "momentum — LPPL sobre o preço" },
+  { name: "momentum", label: "Mom.", title: "momentum — teste BSADF de raiz explosiva (p95 do nulo por Monte Carlo), com persistência de 2 observações" },
   { name: "temporal", label: "Temp.", title: "temporal — aceleração de notícias" },
   { name: "graph_fragility", label: "Graph", title: "graph_fragility — superfície de contágio no grafo" },
-  { name: "valuation", label: "Val.", title: "valuation — múltiplo (P/E; CAPE quando houver)" },
+  { name: "valuation", label: "Val.", title: "valuation — CAPE Shiller nos tickers de ações; P/E como recurso" },
   { name: "credit", label: "Cred.", title: "credit — BIS credit-to-GDP gap (pano de fundo macro)" },
 ];
 
@@ -184,6 +190,17 @@ export default function BubbleEngine() {
             <p className="text-xs text-slate-400 mt-1">{scores.alerting_note}</p>
           </div>
 
+          {/* VALUATION and CRÉDITO once, here: they are market-wide and
+              would be identical text on every row. Repeating them per
+              ticker would imply they were measured per asset. */}
+          {scores.risk_dimensions && (
+            <RiskDimensionsGrid
+              panel={scores.risk_dimensions}
+              title="Pano de fundo do mercado"
+              subtitle="iguais para todos os tickers — EXPLOSIVO e STRESS são por ativo, na tabela"
+            />
+          )}
+
           <div className="bg-slate-900 rounded-lg border border-slate-800 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -221,11 +238,11 @@ export default function BubbleEngine() {
                           {row.context.change_pct_30d != null
                             ? `${row.context.change_pct_30d >= 0 ? "+" : ""}${row.context.change_pct_30d.toFixed(1)}% 30d`
                             : "—"}
-                          {row.context.gsadf_explosive && (
-                            <span className="ml-1 text-red-400" title="GSADF explosivo">
-                              ⚡
-                            </span>
-                          )}
+                        </div>
+                      )}
+                      {row.dimensions && row.dimensions.length > 0 && (
+                        <div className="mt-1.5">
+                          <DimensionBadges dims={row.dimensions} />
                         </div>
                       )}
                     </td>

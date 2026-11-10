@@ -88,7 +88,7 @@ def test_score_ticker_clear_bubble_flags():
     # All five dimensions hot — price, news, valuation and credit.
     r = score_ticker(
         "QQQ",
-        lppl_bubble_prob=0.91, n_points=252,
+        bsadf_recent=[1.40, 1.45], n_points=252,
         accel_ratio=3.2,
         graph_edges=["a->b", "b->c", "c->d", "d->e", "e->f", "f->g"],
         pe=44.0,
@@ -105,7 +105,7 @@ def test_score_ticker_clear_bubble_flags():
 def test_score_ticker_builds_valuation_and_credit():
     r = score_ticker(
         "SPY",
-        lppl_bubble_prob=0.2, n_points=252,
+        bsadf_recent=[-0.50, -0.30], n_points=252,
         accel_ratio=None, graph_edges=[],
         pe=44.0, credit_gap_pct=9.0,
     )
@@ -122,7 +122,7 @@ def test_score_ticker_valuation_credit_alone_do_not_flag():
     # high but thin coverage keeps it from flagging.
     r = score_ticker(
         "XLF",
-        lppl_bubble_prob=None, n_points=0,
+        bsadf_recent=None, n_points=0,
         accel_ratio=None, graph_edges=None,
         pe=44.0, credit_gap_pct=9.0,
     )
@@ -134,7 +134,7 @@ def test_score_ticker_valuation_credit_alone_do_not_flag():
 def test_score_ticker_calm_does_not_flag():
     r = score_ticker(
         "SPY",
-        lppl_bubble_prob=0.15, n_points=252,
+        bsadf_recent=[-0.80, -0.60], n_points=252,
         accel_ratio=1.0,
         graph_edges=[],
     )
@@ -145,7 +145,7 @@ def test_score_ticker_calm_does_not_flag():
 def test_score_ticker_no_data_abstains_without_crash():
     r = score_ticker(
         "TLT",
-        lppl_bubble_prob=None, n_points=0,
+        bsadf_recent=None, n_points=0,
         accel_ratio=None,
         graph_edges=None,
     )
@@ -165,7 +165,7 @@ def test_score_ticker_lone_strong_news_signal_does_not_flag():
     # inherited from the scoring core through the orchestrator.)
     r = score_ticker(
         "BTC-USD",
-        lppl_bubble_prob=None, n_points=0,
+        bsadf_recent=None, n_points=0,
         accel_ratio=None,
         graph_edges=["a->b", "b->c", "c->d", "d->e", "e->f", "f->g"],
     )
@@ -177,7 +177,7 @@ def test_score_ticker_lone_strong_news_signal_does_not_flag():
 def test_score_ticker_attaches_context():
     r = score_ticker(
         "GLD",
-        lppl_bubble_prob=0.2, n_points=252,
+        bsadf_recent=[-0.50, -0.30], n_points=252,
         accel_ratio=None, graph_edges=[],
         context={"close": 200.0, "change_pct_30d": 1.2},
     )

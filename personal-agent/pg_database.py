@@ -335,6 +335,46 @@ def yoy_from_series(points: list[dict]) -> float | None:
         return None
 
 
+def get_recent_feature_by_target(
+    feature_id: str, n: int = 5, days: int = 90,
+) -> dict[str, list[float]]:
+    """The last `n` values of one feature for EVERY target, one query.
+
+    Returns ``{target: [oldest, ..., newest]}``; targets with no rows in
+    the window are absent.
+
+    Exists for the momentum signal's persistence rule, which needs more
+    than the latest point: a BSADF exceedance only scores once it has
+    survived into a second consecutive observation. Doing that with a
+    per-ticker query would add 12 connections to an endpoint already at
+    ~14.5s for want of a pool (#81), so it is one batched round trip
+    with a row_number() window instead.
+
+    `days` bounds the hypertable scan. 90 days holds far more than the
+    handful of daily observations `n` asks for, while still letting the
+    planner skip older chunks.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    out: dict[str, list[float]] = {}
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT target, value FROM (
+                   SELECT target, ts, value,
+                          row_number() OVER (
+                              PARTITION BY target ORDER BY ts DESC
+                          ) AS rn
+                   FROM quant_features
+                   WHERE feature_id = %s AND ts >= %s
+               ) s
+               WHERE rn <= %s
+               ORDER BY target, ts""",
+            (feature_id, cutoff, n),
+        )
+        for r in cur.fetchall():
+            out.setdefault(r["target"], []).append(float(r["value"]))
+    return out
+
+
 def get_latest_features_by_target() -> dict[str, dict]:
     """Latest LPPL + GSADF feature value per ticker.
 
@@ -354,18 +394,23 @@ def get_latest_features_by_target() -> dict[str, dict]:
             SELECT DISTINCT ON (feature_id, target)
                 feature_id, target, value, meta
             FROM quant_features
-            WHERE feature_id IN ('lppl_bubble_prob', 'gsadf_stat')
+            WHERE feature_id IN (
+                'lppl_bubble_prob', 'gsadf_stat', 'drawdown_pct_rank'
+            )
             ORDER BY feature_id, target, ts DESC
         """)
         for r in cur.fetchall():
             ticker = r["target"]
             bucket = out.setdefault(ticker, {})
+            meta = r["meta"] or {}
             if r["feature_id"] == "lppl_bubble_prob":
                 bucket["lppl_bubble_prob"] = float(r["value"])
             elif r["feature_id"] == "gsadf_stat":
                 bucket["gsadf_bsadf"] = float(r["value"])
-                meta = r["meta"] or {}
                 bucket["gsadf_explosive"] = bool(meta.get("explosive", False))
+            elif r["feature_id"] == "drawdown_pct_rank":
+                bucket["drawdown_pct_rank"] = float(r["value"])
+                bucket["drawdown_pct"] = meta.get("drawdown_pct")
     return out
 
 
@@ -620,6 +665,80 @@ def _build_macro_risk() -> dict:
     return {"credit_gap": credit_gap, "hpi": hpi, "bpstat": bpstat}
 
 
+def _macro_latest(indicator: str) -> float | None:
+    """One value from the SQLite macro catalog, or None. Never raises."""
+    try:
+        import macro_repository as mr
+        row = mr.get_latest(indicator)
+        return float(row["value"]) if row is not None else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("macro indicator %s unavailable (%s)", indicator, e)
+        return None
+
+
+def _build_risk_dimensions(
+    watchlist: list[dict], vix: float | None, vix_status: str | None,
+) -> dict:
+    """The four dimensions at MARKET level, for the top of the dashboard.
+
+    VALUATION and CRÉDITO are market-wide by nature. EXPLOSIVO and
+    STRESS are per-ticker, so the market view takes the WORST ticker on
+    each — the question the panel answers is "is anything explosive /
+    falling hard right now", not "is the average fine".
+
+    Reads nothing new from Postgres: the per-ticker inputs come from
+    the watchlist rows already fetched, and the two macro values come
+    from SQLite. Never raises — a dimension with no data renders as
+    `unknown`, which is the state this panel exists to make visible.
+    """
+    import risk_dimensions as rd
+    from bubble_scoring import _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE
+
+    cape = _macro_latest("cape_shiller")
+    credit_gap = _macro_latest("bis_credit_gap_us")
+
+    # Worst = highest BSADF. Only the latest point is available here, so
+    # the market tile can reach WATCH but never DANGER (which needs the
+    # persistence run). The Bubble Engine, which has the history, is
+    # where a red EXPLOSIVO can appear.
+    top = max(
+        (w for w in watchlist if w.get("gsadf_bsadf") is not None),
+        key=lambda w: w["gsadf_bsadf"], default=None,
+    )
+    explosive = rd.explosive_dimension(
+        [top["gsadf_bsadf"]] if top else None,
+        _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE,
+    )
+    if top:
+        explosive["ticker"] = top["ticker"]
+        explosive["applied"] += f" Pior da watchlist: {top['ticker']}."
+
+    # Worst = deepest percentile rank.
+    worst_dd = max(
+        (w for w in watchlist if w.get("drawdown_pct_rank") is not None),
+        key=lambda w: w["drawdown_pct_rank"], default=None,
+    )
+    stress = rd.stress_dimension(
+        worst_dd.get("drawdown_pct_rank") if worst_dd else None,
+        worst_dd.get("drawdown_pct") if worst_dd else None,
+        vix, vix_status,
+    )
+    if worst_dd:
+        stress["ticker"] = worst_dd["ticker"]
+        stress["applied"] += f" Pior da watchlist: {worst_dd['ticker']}."
+
+    return {
+        "dimensions": [
+            explosive,
+            rd.valuation_dimension(cape),
+            rd.credit_dimension(credit_gap),
+            stress,
+        ],
+        "legend": rd.LEGEND,
+        "scope": "mercado",
+    }
+
+
 def get_quant_dashboard() -> dict:
     """Bundled snapshot used by the /api/quant/dashboard endpoint.
 
@@ -665,6 +784,16 @@ def get_quant_dashboard() -> dict:
 
     # ---- Watchlist (now includes LPPL + GSADF detector output) ----
     out["watchlist"] = get_watchlist()
+
+    # ---- The four risk dimensions, market-wide ----
+    # Must come AFTER the watchlist: stress is derived from the rows it
+    # returns. Four small objects and no extra Postgres round trip —
+    # CAPE and the credit gap come from the SQLite catalog (~1ms,
+    # measured in #80) and the stress inputs are already in hand.
+    out["risk_dimensions"] = _build_risk_dimensions(
+        out["watchlist"], latest_vix, out["vix"]["status"],
+    )
+
     out["updated_at"] = datetime.now(timezone.utc).isoformat()
     return out
 
