@@ -17,6 +17,7 @@ import {
   QuantMacroRisk,
   QuantSeriesPoint,
 } from "../api";
+import { RiskDimensionsGrid } from "../components/RiskDimensions";
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -1029,7 +1030,7 @@ export default function Quant() {
         <div>
           <h1 className="text-3xl font-bold">Quant Dashboard</h1>
           <p className="text-slate-400 mt-1">
-            Indicadores macro, cross-asset e detectores de bolha (LPPL + GSADF).
+            Indicadores macro, cross-asset e detectores de bolha (BSADF + LPPL).
           </p>
         </div>
         <button
@@ -1053,6 +1054,17 @@ export default function Quant() {
 
       {data && (
         <>
+          {/* Top of the page on purpose: the four dimensions are the
+              "is anything wrong right now" answer, and they state it
+              explicitly instead of leaving calm to be inferred from an
+              absent badge. */}
+          {data.risk_dimensions && (
+            <RiskDimensionsGrid
+              panel={data.risk_dimensions}
+              subtitle="nível de mercado · EXPLOSIVO e STRESS mostram o pior ticker da watchlist"
+            />
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <SummaryCard
               title="Yield curve (10Y - 3M)"
@@ -1100,7 +1112,7 @@ export default function Quant() {
 
           <Panel
             title="Watchlist + bubble detectors"
-            subtitle="Close + variação + valuação + LPPL bubble prob (Sornette) + GSADF explosivity test (Phillips-Shi-Yu). Detectores correm 1×/dia às 23:00 UTC."
+            subtitle="Close + variação + valuação + GSADF/BSADF (Phillips-Shi-Yu), o teste que alimenta o momentum, + LPPL R² como diagnóstico de ajuste. Detectores correm 1×/dia às 23:00 UTC."
           >
             <table className="w-full text-sm">
               <thead>
@@ -1111,7 +1123,21 @@ export default function Quant() {
                   <th className="py-2 text-right">30d</th>
                   <th className="py-2 text-right">P/E</th>
                   <th className="py-2 text-right">Mkt Cap</th>
-                  <th className="py-2 text-right" title="LPPL bubble probability (0..1) — R² of best log-periodic fit, discounted if params outside Sornette ranges">LPPL</th>
+                  {/* Kept, but renamed to what it actually is. The
+                      detector still runs and the number is still a
+                      useful fit diagnostic — it just no longer feeds
+                      the ensemble, because R² measures how well a
+                      curve fits, not whether a bubble exists. Removing
+                      the column would hide a series we still compute;
+                      leaving it labelled "LPPL" next to bubble scores
+                      invited exactly the misreading that got it
+                      dropped from the scoring. */}
+                  <th
+                    className="py-2 text-right"
+                    title="LPPL R² — qualidade do ajuste log-periódico (0..1), descontado se os parâmetros saem das gamas de Sornette. NÃO é probabilidade de bolha e NÃO entra no scoring: o R² é ~0.9 tanto numa reta como numa bolha. O momentum usa agora o teste BSADF."
+                  >
+                    LPPL R²
+                  </th>
                   <th className="py-2 text-right" title="GSADF BSADF statistic. PSY 95% critical ≈ 1.49, 99% ≈ 2.07. Values above 1.49 = mildly explosive.">GSADF</th>
                 </tr>
               </thead>

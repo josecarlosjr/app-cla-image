@@ -73,35 +73,119 @@ def _clamp01(x: float) -> float:
 # Individual signal scorers (pure)
 # ---------------------------------------------------------------------------
 
-# LPPL needs a meaningful price history. Below this it isn't fit at all.
-_LPPL_MIN_POINTS = 50
+# The detector needs a meaningful price history. Below this it isn't run.
+_MOMENTUM_MIN_POINTS = 50
 # Full confidence at roughly one trading year of daily points.
-_LPPL_FULL_POINTS = 250
+_MOMENTUM_FULL_POINTS = 250
+
+# BSADF critical values — the null distribution of the statistic this
+# codebase actually computes.
+#
+# Measured, not quoted. quant_detectors' ADF has a constant and NO lag
+# augmentation, so the published PSY (2015) Table 1 values do not
+# transfer to it; the previous _GSADF_CRIT_95 = 1.49 came from that
+# table and sits at the 99.4th percentile of this estimator's null,
+# not the 95th. (1.49 is a critical value for the double-sup GSADF,
+# while what gets scored is BSADF at the latest point — a different
+# statistic. Simulated, the double-sup null has p95 ≈ 2.15.)
+#
+# Monte Carlo under H0 (driftless random walk), using the production
+# `_adf_stat` verbatim: n=250, r0=30, 30 000 paths in 6 independent
+# batches of 5 000 (seeds 1000..1005).
+#
+#     p95 = 0.6283   (batch spread 0.596–0.674, sd 0.024)
+#     p99 = 1.2806   (batch spread 1.219–1.343, sd 0.046)
+#
+# Re-derive with research/gsadf_critical_values.py if the ADF changes.
+_GSADF_CRIT95 = 0.628
+_GSADF_CRIT99 = 1.281
+
+# A single print above the threshold is not a regime. Measured daily
+# deltas of the stored BSADF run 0.05–0.18 typically but spike to
+# 0.53–2.14 (XLK went -0.38 -> +0.96 -> +0.27 in three sessions), so a
+# lone crossing is well inside the noise. Require the exceedance to
+# survive into a second consecutive observation before scoring above 0.
+_GSADF_MIN_CONSECUTIVE = 2
+
+
+def _trailing_run_above(values: list[float], threshold: float) -> int:
+    """How many of the most recent values, consecutively, exceed
+    `threshold` (counting back from the newest)."""
+    run = 0
+    for v in reversed(values):
+        if v is None or v <= threshold:
+            break
+        run += 1
+    return run
 
 
 def momentum_signal(
-    lppl_bubble_prob: float | None, n_points: int | None,
+    bsadf_recent: list[float] | None, n_points: int | None,
 ) -> Signal:
-    """Super-exponential price growth via the LPPL bubble probability.
+    """Explosive price growth via the BSADF statistic (PSY 2015).
 
-    `lppl_bubble_prob` already comes 0..1 from quant_detectors (R² of
-    the best log-periodic fit, discounted when params fall outside
-    Sornette ranges), so it maps straight to score. Confidence scales
-    with how many price points fed the fit.
+    `bsadf_recent` is the recent BSADF history for one ticker, oldest
+    first, as stored by quant_detectors. The newest value sets the
+    score; the ones before it decide whether the exceedance has
+    persisted.
+
+    Why BSADF and not the LPPL probability this used to take: that
+    "probability" is the R² of the best log-periodic fit. R² measures
+    how well a curve fits, not whether the fit means anything — it is
+    ~0.9 for a straight line and ~0.9 for a bubble alike, and the
+    observed distribution bore that out (1573 points crammed between
+    0.08 and 0.96, with XLE at 0.94 and SPY at 0.85 in a market with no
+    bubble). At weight 0.40, the largest in the ensemble, that was
+    noise driving the composite. BSADF tests a falsifiable hypothesis
+    (explosive root vs unit root) and has a null distribution to
+    normalise against.
+
+    Scoring: 0 at the 95th percentile of the null, 1 at the 99th, so
+    0.5 means literally "halfway between what a random walk produces 5%
+    of the time and what it produces 1% of the time". Same shape as
+    credit_signal (Basel trigger -> historical max) and
+    valuation_signal (rich -> dotcom peak).
+
+    A measured value below the threshold scores 0 but KEEPS its
+    confidence — that is data saying "no explosive regime", not missing
+    data. Only an absent or too-short series abstains.
     """
-    if (lppl_bubble_prob is None or n_points is None
-            or n_points < _LPPL_MIN_POINTS):
+    if (not bsadf_recent or n_points is None
+            or n_points < _MOMENTUM_MIN_POINTS):
         return Signal("momentum", 0.0, 0.0,
-                      "insufficient price history for LPPL fit")
+                      "insufficient price history for the BSADF test")
+
     conf = _clamp01(
-        (n_points - _LPPL_MIN_POINTS)
-        / (_LPPL_FULL_POINTS - _LPPL_MIN_POINTS)
+        (n_points - _MOMENTUM_MIN_POINTS)
+        / (_MOMENTUM_FULL_POINTS - _MOMENTUM_MIN_POINTS)
     )
-    # Any valid fit earns a floor of confidence so it isn't ignored.
+    # Any valid run earns a floor of confidence so it isn't ignored.
     conf = max(0.2, conf)
+
+    latest = bsadf_recent[-1]
+    run = _trailing_run_above(bsadf_recent, _GSADF_CRIT95)
+
+    if run < _GSADF_MIN_CONSECUTIVE:
+        if run == 0:
+            detail = (
+                f"BSADF {latest:+.2f} < {_GSADF_CRIT95:.3f} (p95 nulo) "
+                f"— sem raiz explosiva"
+            )
+        else:
+            detail = (
+                f"BSADF {latest:+.2f} > {_GSADF_CRIT95:.3f} mas só em "
+                f"{run} observação — aguarda persistência "
+                f"({_GSADF_MIN_CONSECUTIVE} consecutivas)"
+            )
+        return Signal("momentum", 0.0, conf, detail)
+
+    score = _clamp01(
+        (latest - _GSADF_CRIT95) / (_GSADF_CRIT99 - _GSADF_CRIT95)
+    )
     return Signal(
-        "momentum", _clamp01(lppl_bubble_prob), conf,
-        f"LPPL prob {lppl_bubble_prob:.2f} from {n_points} pts",
+        "momentum", score, conf,
+        f"BSADF {latest:+.2f} acima do p95 nulo ({_GSADF_CRIT95:.3f}) "
+        f"em {run} observações consecutivas",
     )
 
 
@@ -318,12 +402,12 @@ def run_selftest() -> dict:
             "pass": bool(check(comp)),
         })
 
-    # 1. Clear bubble: strong LPPL, strongly accelerating, fragile graph.
+    # 1. Clear bubble: BSADF past the null p99, accelerating, fragile graph.
     add(
         "clear_bubble",
         "composite alto (>0.6), cobertura 3/3, DISPARA",
         [
-            momentum_signal(0.91, 252),
+            momentum_signal([1.222, 1.222], 252),
             temporal_signal(3.2),
             graph_fragility_signal(["a->b", "b->c", "c->d",
                                     "d->e", "e->f", "f->g"]),
@@ -332,12 +416,12 @@ def run_selftest() -> dict:
         and c["flagged"] is True,
     )
 
-    # 2. Calm market: low LPPL, no acceleration, no graph chains.
+    # 2. Calm market: BSADF below the null p95, no acceleration, no chains.
     add(
         "calm_market",
         "composite baixo (<0.25), NAO dispara",
         [
-            momentum_signal(0.15, 252),
+            momentum_signal([-0.80, -0.60], 252),
             temporal_signal(1.0),
             graph_fragility_signal([]),
         ],
@@ -364,7 +448,7 @@ def run_selftest() -> dict:
         "partial_momentum_only",
         "composite ~=0.80 (nao diluido) mas conf ~0.40, NAO dispara",
         [
-            momentum_signal(0.80, 252),
+            momentum_signal([1.15, 1.15], 252),
             temporal_signal(None),
             graph_fragility_signal([]),
         ],
@@ -374,15 +458,15 @@ def run_selftest() -> dict:
         and c["flagged"] is False,
     )
 
-    # 5. Conflicting: strong LPPL but flat temporal (price fit a
-    #    log-periodic shape yet isn't actually accelerating — a
-    #    plausible false-LPPL). The flat temporal must dampen the
-    #    composite well below the momentum score, and it must not flag.
+    # 5. Conflicting: explosive price but flat temporal (an explosive
+    #    root with no attention behind it). The flat temporal must
+    #    dampen the composite well below the momentum score, and it
+    #    must not flag.
     add(
         "conflicting_signals",
         "momentum alto + temporal flat -> composite amortecido (0.4-0.75), NAO dispara",
         [
-            momentum_signal(0.90, 252),
+            momentum_signal([1.216, 1.216], 252),
             temporal_signal(1.0),
             graph_fragility_signal([]),
         ],
@@ -412,7 +496,7 @@ def run_selftest() -> dict:
         "full_quant_bubble",
         "5/5 sinais quentes -> composite alto, cobertura 5/5, DISPARA",
         [
-            momentum_signal(0.90, 252),
+            momentum_signal([1.216, 1.216], 252),
             temporal_signal(3.0),
             graph_fragility_signal(["a->b", "b->c", "c->d",
                                     "d->e", "e->f", "f->g"]),

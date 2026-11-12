@@ -7,10 +7,10 @@ live data each signal needs, builds the three Signals, and runs
 
 Scope (decided for Step 2): **per ticker**, combining
 
-  - momentum         ← price   (LPPL bubble prob from quant_features)   "ticker+preço"
+  - momentum         ← price   (BSADF explosive-root test, quant_features) "ticker+preço"
   - temporal         ← news    (attention acceleration, temporal.py)    "ticker+news"
   - graph_fragility  ← news    (knowledge-graph contagion surface)      "ticker+news"
-  - valuation        ← quant   (trailing P/E from quant_valuations)     "ticker+preço"
+  - valuation        ← quant   (Shiller CAPE, trailing P/E fallback)    "ticker+preço"
   - credit           ← quant   (BIS credit-to-GDP gap, macro backdrop)
 
 i.e. each ticker is scored from its own price history AND from the
@@ -55,7 +55,14 @@ logger = logging.getLogger(__name__)
 # the bar count at this so n_points reflects what a fit actually used
 # (the detector reads the most-recent WINDOW_DAYS closes), and so the
 # momentum confidence ramp (full at ~250 pts) lines up with reality.
-_LPPL_WINDOW = 252
+_DETECTOR_WINDOW = 252
+
+# How much BSADF history the momentum persistence rule gets to see.
+# It needs _GSADF_MIN_CONSECUTIVE (2) observations; a few more are
+# fetched so the detail string can report the length of a longer run,
+# and so one missed cron day doesn't collapse the history to a single
+# point. Same batched query either way, so the extra rows are free.
+_BSADF_HISTORY_POINTS = 5
 
 
 # The "ticker+news" link. temporal.py measures attention acceleration per
@@ -103,7 +110,7 @@ def temporal_ratio_for_ticker(
 def score_ticker(
     ticker: str,
     *,
-    lppl_bubble_prob: float | None,
+    bsadf_recent: list[float] | None,
     n_points: int | None,
     accel_ratio: float | None,
     graph_edges: list | None,
@@ -120,9 +127,14 @@ def score_ticker(
     Returns the composite_score dict (composite, aggregate_confidence,
     coverage, flagged, components, ...) plus the ticker and optional
     display context.
+
+    `bsadf_recent` is the recent BSADF history, oldest first — a list,
+    not a scalar, because momentum requires the exceedance to persist.
+    It replaced `lppl_bubble_prob`: see momentum_signal on why R² of a
+    log-periodic fit was not measuring what it was weighted for.
     """
     signals = [
-        momentum_signal(lppl_bubble_prob, n_points),
+        momentum_signal(bsadf_recent, n_points),
         temporal_signal(accel_ratio),
         graph_fragility_signal(graph_edges),
         valuation_signal(pe, cape),
@@ -233,6 +245,26 @@ _CAPE_TICKERS: frozenset[str] = frozenset({
 })
 
 
+def _latest_vix() -> tuple[float | None, str | None]:
+    """Latest VIX and its dashboard band, for the STRESS dimension.
+
+    Reuses pg_database's own ``_vix_status`` so the Bubble Engine and
+    the Quant dashboard cannot disagree about what "nervoso" means.
+    Degrades to (None, None), which renders STRESS from the drawdown
+    alone.
+    """
+    try:
+        import pg_database as pg
+        series = pg.get_indicator_series("VIXCLS", 30)
+        if not series:
+            return None, None
+        latest = float(series[-1]["value"])
+        return latest, pg._vix_status(latest)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("VIX unavailable (%s); stress uses drawdown only", e)
+        return None, None
+
+
 def _graph_edges(ticker: str, graph: dict) -> list[str]:
     """Reuse quant_alerts' 1-2 hop walk so the Bubble Engine and the
     quant alerts see the *same* graph neighbourhood (the edge cap in
@@ -261,6 +293,12 @@ def gather_and_score() -> dict:
     watchlist = pg.get_watchlist()
     tickers = [w["ticker"] for w in watchlist]
     bar_counts = pg.get_bar_counts(tickers)
+    # Momentum needs the recent BSADF history, not just the latest
+    # point, so a lone threshold crossing cannot score on its own.
+    # One batched query for every ticker — see get_recent_feature_by_target.
+    bsadf_hist = pg.get_recent_feature_by_target(
+        "gsadf_stat", n=_BSADF_HISTORY_POINTS,
+    )
     accel = _accel_by_category()
     graph = _load_approved_graph()
     # Credit is a macro backdrop; the watchlist is US-listed (plus global
@@ -271,14 +309,18 @@ def gather_and_score() -> dict:
     # per ticker. Handed only to the equity tickers (see _CAPE_TICKERS).
     cape = _cape_shiller()
 
+    import risk_dimensions as rd
+    from bubble_scoring import _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE
+    vix_latest, vix_status = _latest_vix()
+
     rows: list[dict] = []
     for w in watchlist:
         t = w["ticker"]
         ticker_cape = cape if t in _CAPE_TICKERS else None
         rows.append(score_ticker(
             t,
-            lppl_bubble_prob=w.get("lppl_bubble_prob"),
-            n_points=min(bar_counts.get(t, 0), _LPPL_WINDOW),
+            bsadf_recent=bsadf_hist.get(t),
+            n_points=min(bar_counts.get(t, 0), _DETECTOR_WINDOW),
             accel_ratio=temporal_ratio_for_ticker(t, accel),
             graph_edges=_graph_edges(t, graph),
             pe=w.get("pe"),
@@ -292,6 +334,32 @@ def gather_and_score() -> dict:
                 "gsadf_explosive": w.get("gsadf_explosive", False),
             },
         ))
+        # The two per-ticker dimensions. VALUATION and CRÉDITO are
+        # market-wide and would be the same text on all 12 rows, so
+        # they go in the header instead (see `dims` below) rather than
+        # repeating — the panel should not imply they were measured
+        # per asset.
+        rows[-1]["dimensions"] = [
+            rd.explosive_dimension(
+                bsadf_hist.get(t), _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE,
+            ),
+            rd.stress_dimension(
+                w.get("drawdown_pct_rank"), w.get("drawdown_pct"),
+                vix_latest, vix_status,
+            ),
+        ]
+
+    # The two market-wide dimensions, once, for the page header. Shown
+    # here rather than on every row so the panel does not suggest the
+    # CAPE or the US credit gap were measured per ticker.
+    dims = {
+        "dimensions": [
+            rd.valuation_dimension(cape),
+            rd.credit_dimension(us_credit_gap),
+        ],
+        "legend": rd.LEGEND,
+        "scope": "mercado (repetem-se em todos os tickers)",
+    }
 
     # Strongest (composite, then evidence) first.
     rows.sort(
@@ -313,6 +381,7 @@ def gather_and_score() -> dict:
             "min_composite": FLAG_MIN_COMPOSITE,
             "min_confidence": FLAG_MIN_CONFIDENCE,
         },
+        "risk_dimensions": dims,
         "n_tickers": len(rows),
         "n_flagged": sum(1 for r in rows if r["flagged"]),
         "generated_at": datetime.now(timezone.utc).isoformat(),

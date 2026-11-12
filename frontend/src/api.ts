@@ -379,6 +379,40 @@ export type MacroCountryDetail = {
   bpstat: MacroCountryBpstat[];
 };
 
+// The four risk dimensions (Onda 13 Sprint 4). Served by
+// risk_dimensions.py, which keeps every threshold next to the text
+// explaining where it came from — so the UI never has to invent a
+// justification for a number it is rendering.
+//
+// `anchor_kind` is the honesty flag: "external" means someone else
+// fixed the number (a null-distribution percentile, a Basel trigger,
+// the asset's own history) and we adopted it; "design" means we chose
+// it. `caveat` carries the admission for the bands that are design
+// choices — the amber ones, mostly.
+export type RiskDimension = {
+  key: "explosive" | "valuation" | "credit" | "stress";
+  label: string;
+  state: "calm" | "watch" | "danger" | "unknown";
+  value: number | null;
+  display: string;
+  measures: string;
+  applied: string;
+  anchor: string;
+  anchor_kind: "external" | "design";
+  caveat?: string | null;
+  ticker?: string;
+  run?: number;
+  country?: string;
+  drawdown_pct?: number | null;
+  vix?: number | null;
+};
+
+export type RiskDimensionsPanel = {
+  dimensions: RiskDimension[];
+  legend: { key: string; label: string; short: string }[];
+  scope: string;
+};
+
 export type QuantDashboard = {
   yield_curve: {
     T10Y3M: QuantSeriesPoint[];
@@ -398,6 +432,7 @@ export type QuantDashboard = {
     status: "calm" | "nervous" | "fear" | "panic" | "unknown";
   };
   macro_risk: QuantMacroRisk;
+  risk_dimensions?: RiskDimensionsPanel;
   watchlist: QuantWatchlistRow[];
   updated_at: string;
 };

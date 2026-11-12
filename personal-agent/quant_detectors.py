@@ -23,7 +23,11 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from pg_database import connect, upsert_feature
+# pg_database is imported lazily inside the two functions that touch the
+# DB. Everything else here — the ADF, the LPPL fit, the GSADF scan, the
+# drawdown stress — is pure numpy, and importing psycopg to reach it
+# made that maths untestable anywhere the driver isn't installed. Same
+# lazy-import discipline the API and the orchestrator already use.
 from log_config import setup_logging
 
 setup_logging()
@@ -44,6 +48,7 @@ WINDOW_DAYS = 252
 
 def get_close_prices(ticker: str, days: int) -> np.ndarray:
     """Return the most-recent N closes for a ticker, chronologically ordered."""
+    from pg_database import connect
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
             """SELECT close FROM quant_bars
@@ -164,7 +169,23 @@ def fit_lppl(log_prices: np.ndarray) -> dict:
 # ===========================================================================
 
 _R0 = 30                # minimum window size for the inner ADF
-_GSADF_CRIT_95 = 1.49   # PSY (2015) Table 1, n≈250, no lag → 95% critical
+
+# 95% critical value for the statistic actually compared below, which is
+# BSADF at the latest point — not the double-sup GSADF.
+#
+# This was 1.49, quoted from PSY (2015) Table 1. That value does not
+# apply here for two independent reasons: it is a critical value for the
+# double-sup GSADF (a different statistic), and the table assumes lag
+# augmentation while `_adf_stat` has a constant and no lags. Simulated
+# against this very estimator, 1.49 sits at the 99.4th percentile of the
+# BSADF null — so `explosive` was firing about five times less often
+# than a 95% test should.
+#
+# Measured under H0 (driftless random walk), n=250, r0=30, 30 000 paths
+# in 6 independent batches of 5 000: p95 = 0.6283 (spread 0.596–0.674),
+# p99 = 1.2806. See research/gsadf_critical_values.py to reproduce, and
+# bubble_scoring._GSADF_CRIT95, which must stay in step with this.
+_GSADF_CRIT_95 = 0.628
 
 
 def _adf_stat(y: np.ndarray) -> float:
@@ -218,10 +239,74 @@ def gsadf(log_prices: np.ndarray, r0: int = _R0) -> dict:
 
 
 # ===========================================================================
+# Drawdown stress — self-calibrating, no fixed threshold
+# ===========================================================================
+#
+# "Is this fall large?" has no universal answer: -8% is routine for BTC
+# and a crisis for TLT. So the measure is the CURRENT drawdown from the
+# trailing 90-bar peak, expressed as a percentile of this asset's OWN
+# history of that same quantity. 95 means "deeper than 95% of all the
+# drawdowns this asset has ever been in".
+#
+# Computed here, in the daily cron, and stored as a feature — NOT at
+# request time. The percentile needs the asset's full history (2635
+# bars for the ETFs, 24831 for ^GSPC back to 1927) and quant_bars is
+# the hypertable whose full-scan OOM'd Postgres (PR #78). Once a day
+# per ticker is fine; once per dashboard load is not.
+# ===========================================================================
+
+_DRAWDOWN_WINDOW = 90       # trailing bars the peak is measured over
+_DRAWDOWN_MIN_OBS = 120     # need a real distribution to rank against
+_FULL_HISTORY_BARS = 10 ** 7
+
+
+def drawdown_stress(
+    closes: np.ndarray, window: int = _DRAWDOWN_WINDOW,
+) -> dict | None:
+    """Current drawdown vs the trailing peak, ranked against own history.
+
+    Returns ``{drawdown_pct, pct_rank, n_obs, window}`` or None when
+    there is not enough history to rank against.
+
+    ``pct_rank`` is the share of historical observations whose drawdown
+    was NO DEEPER than the current one, in percent — so it rises as the
+    fall gets worse, and 100 means "the deepest this asset has been".
+    """
+    n = len(closes)
+    if n < window + _DRAWDOWN_MIN_OBS:
+        return None
+    try:
+        from numpy.lib.stride_tricks import sliding_window_view
+        peaks = sliding_window_view(closes, window).max(axis=1)
+    except (ImportError, ValueError):       # numpy < 1.20
+        peaks = np.array([
+            closes[i:i + window].max() for i in range(n - window + 1)
+        ])
+    aligned = closes[window - 1:]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dd = np.where(peaks > 0, aligned / peaks - 1.0, 0.0)
+    dd = dd[np.isfinite(dd)]
+    if len(dd) < _DRAWDOWN_MIN_OBS:
+        return None
+
+    stress = -dd                       # 0 at the peak, larger = worse
+    current = float(stress[-1])
+    pct_rank = float((stress <= current).mean() * 100.0)
+    return {
+        "drawdown_pct": round(float(dd[-1]) * 100.0, 4),
+        "pct_rank": round(pct_rank, 2),
+        "n_obs": int(len(stress)),
+        "window": window,
+    }
+
+
+# ===========================================================================
 # Per-ticker driver + main entry
 # ===========================================================================
 
 def run_for_ticker(ticker: str) -> dict:
+    from pg_database import upsert_feature
+
     closes = get_close_prices(ticker, WINDOW_DAYS)
     if len(closes) < 50:
         logger.warning("%s: only %d bars available, skipping",
@@ -257,6 +342,25 @@ def run_for_ticker(ticker: str) -> dict:
     else:
         summary["gsadf_bsadf"] = None
         summary["gsadf_explosive"] = False
+
+    # Stress needs the FULL history to rank against, not the fit window.
+    # Second query per ticker, once a day — see drawdown_stress.
+    try:
+        full = get_close_prices(ticker, _FULL_HISTORY_BARS)
+        stress = drawdown_stress(full)
+    except Exception as e:  # noqa: BLE001 — never break the detector run
+        logger.warning("%s: drawdown stress failed: %s", ticker, e)
+        stress = None
+    if stress is not None:
+        upsert_feature(
+            "drawdown_pct_rank", ticker, ts_now, stress["pct_rank"],
+            meta=stress,
+        )
+        summary["drawdown_pct"] = stress["drawdown_pct"]
+        summary["drawdown_pct_rank"] = stress["pct_rank"]
+    else:
+        summary["drawdown_pct"] = None
+        summary["drawdown_pct_rank"] = None
 
     return summary
 

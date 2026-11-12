@@ -335,6 +335,56 @@ def yoy_from_series(points: list[dict]) -> float | None:
         return None
 
 
+def _apply_feature_contract(row: dict, features: dict) -> dict:
+    """Carry the contracted detector keys onto a watchlist row.
+
+    Lazy import: risk_dimensions is pure, but importing it at module
+    scope would have the two modules import each other.
+    """
+    import risk_dimensions as rd
+    return rd.apply_feature_contract(row, features)
+
+
+def get_recent_feature_by_target(
+    feature_id: str, n: int = 5, days: int = 90,
+) -> dict[str, list[float]]:
+    """The last `n` values of one feature for EVERY target, one query.
+
+    Returns ``{target: [oldest, ..., newest]}``; targets with no rows in
+    the window are absent.
+
+    Exists for the momentum signal's persistence rule, which needs more
+    than the latest point: a BSADF exceedance only scores once it has
+    survived into a second consecutive observation. Doing that with a
+    per-ticker query would add 12 connections to an endpoint already at
+    ~14.5s for want of a pool (#81), so it is one batched round trip
+    with a row_number() window instead.
+
+    `days` bounds the hypertable scan. 90 days holds far more than the
+    handful of daily observations `n` asks for, while still letting the
+    planner skip older chunks.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    out: dict[str, list[float]] = {}
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT target, value FROM (
+                   SELECT target, ts, value,
+                          row_number() OVER (
+                              PARTITION BY target ORDER BY ts DESC
+                          ) AS rn
+                   FROM quant_features
+                   WHERE feature_id = %s AND ts >= %s
+               ) s
+               WHERE rn <= %s
+               ORDER BY target, ts""",
+            (feature_id, cutoff, n),
+        )
+        for r in cur.fetchall():
+            out.setdefault(r["target"], []).append(float(r["value"]))
+    return out
+
+
 def get_latest_features_by_target() -> dict[str, dict]:
     """Latest LPPL + GSADF feature value per ticker.
 
@@ -354,18 +404,23 @@ def get_latest_features_by_target() -> dict[str, dict]:
             SELECT DISTINCT ON (feature_id, target)
                 feature_id, target, value, meta
             FROM quant_features
-            WHERE feature_id IN ('lppl_bubble_prob', 'gsadf_stat')
+            WHERE feature_id IN (
+                'lppl_bubble_prob', 'gsadf_stat', 'drawdown_pct_rank'
+            )
             ORDER BY feature_id, target, ts DESC
         """)
         for r in cur.fetchall():
             ticker = r["target"]
             bucket = out.setdefault(ticker, {})
+            meta = r["meta"] or {}
             if r["feature_id"] == "lppl_bubble_prob":
                 bucket["lppl_bubble_prob"] = float(r["value"])
             elif r["feature_id"] == "gsadf_stat":
                 bucket["gsadf_bsadf"] = float(r["value"])
-                meta = r["meta"] or {}
                 bucket["gsadf_explosive"] = bool(meta.get("explosive", False))
+            elif r["feature_id"] == "drawdown_pct_rank":
+                bucket["drawdown_pct_rank"] = float(r["value"])
+                bucket["drawdown_pct"] = meta.get("drawdown_pct")
     return out
 
 
@@ -469,7 +524,7 @@ def get_watchlist() -> list[dict]:
         prev = float(r["prev_close"]) if r["prev_close"] is not None else None
         c30 = float(r["close_30d"]) if r["close_30d"] is not None else None
         f = features.get(r["ticker"], {})
-        out.append({
+        row = {
             "ticker": r["ticker"],
             "ts": r["ts"].isoformat(),
             "close": close,
@@ -477,10 +532,14 @@ def get_watchlist() -> list[dict]:
             "change_pct_30d": ((close - c30) / c30 * 100) if c30 else None,
             "pe": float(r["pe"]) if r["pe"] is not None else None,
             "market_cap": float(r["market_cap"]) if r["market_cap"] is not None else None,
-            "lppl_bubble_prob": f.get("lppl_bubble_prob"),
-            "gsadf_bsadf": f.get("gsadf_bsadf"),
-            "gsadf_explosive": f.get("gsadf_explosive", False),
-        })
+        }
+        # Detector output, carried by the contract the consumer declares
+        # (risk_dimensions.apply_feature_contract) rather than a list
+        # repeated here. A key added there flows through automatically;
+        # the hand-kept version shipped with drawdown_pct_rank written,
+        # read, and then dropped right here, which left STRESS rendering
+        # from the VIX alone and reporting `unknown` for the other half.
+        out.append(_apply_feature_contract(row, f))
     return out
 
 
@@ -620,6 +679,46 @@ def _build_macro_risk() -> dict:
     return {"credit_gap": credit_gap, "hpi": hpi, "bpstat": bpstat}
 
 
+def _macro_latest(indicator: str) -> float | None:
+    """One value from the SQLite macro catalog, or None. Never raises."""
+    try:
+        import macro_repository as mr
+        row = mr.get_latest(indicator)
+        return float(row["value"]) if row is not None else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("macro indicator %s unavailable (%s)", indicator, e)
+        return None
+
+
+def _build_risk_dimensions(
+    watchlist: list[dict], vix: float | None, vix_status: str | None,
+) -> dict:
+    """The four dimensions at market level, for the top of the dashboard.
+
+    Thin shell: fetches the two macro values from SQLite and hands
+    everything to the pure `risk_dimensions.market_panel`. The
+    assembly lives there so it can be tested without a DB driver —
+    which is how the STRESS wiring bug got past the first round.
+
+    Reads nothing new from Postgres: the per-ticker inputs come from
+    the watchlist rows already fetched. Never raises — a dimension
+    with no data renders as `unknown`, the state this panel exists to
+    make visible.
+    """
+    import risk_dimensions as rd
+    from bubble_scoring import _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE
+
+    return rd.market_panel(
+        watchlist,
+        cape=_macro_latest("cape_shiller"),
+        credit_gap_pct=_macro_latest("bis_credit_gap_us"),
+        vix=vix,
+        vix_status=vix_status,
+        crit95=_GSADF_CRIT95,
+        min_consec=_GSADF_MIN_CONSECUTIVE,
+    )
+
+
 def get_quant_dashboard() -> dict:
     """Bundled snapshot used by the /api/quant/dashboard endpoint.
 
@@ -665,6 +764,16 @@ def get_quant_dashboard() -> dict:
 
     # ---- Watchlist (now includes LPPL + GSADF detector output) ----
     out["watchlist"] = get_watchlist()
+
+    # ---- The four risk dimensions, market-wide ----
+    # Must come AFTER the watchlist: stress is derived from the rows it
+    # returns. Four small objects and no extra Postgres round trip —
+    # CAPE and the credit gap come from the SQLite catalog (~1ms,
+    # measured in #80) and the stress inputs are already in hand.
+    out["risk_dimensions"] = _build_risk_dimensions(
+        out["watchlist"], latest_vix, out["vix"]["status"],
+    )
+
     out["updated_at"] = datetime.now(timezone.utc).isoformat()
     return out
 
