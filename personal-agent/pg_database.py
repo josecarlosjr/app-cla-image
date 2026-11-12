@@ -335,6 +335,16 @@ def yoy_from_series(points: list[dict]) -> float | None:
         return None
 
 
+def _apply_feature_contract(row: dict, features: dict) -> dict:
+    """Carry the contracted detector keys onto a watchlist row.
+
+    Lazy import: risk_dimensions is pure, but importing it at module
+    scope would have the two modules import each other.
+    """
+    import risk_dimensions as rd
+    return rd.apply_feature_contract(row, features)
+
+
 def get_recent_feature_by_target(
     feature_id: str, n: int = 5, days: int = 90,
 ) -> dict[str, list[float]]:
@@ -514,7 +524,7 @@ def get_watchlist() -> list[dict]:
         prev = float(r["prev_close"]) if r["prev_close"] is not None else None
         c30 = float(r["close_30d"]) if r["close_30d"] is not None else None
         f = features.get(r["ticker"], {})
-        out.append({
+        row = {
             "ticker": r["ticker"],
             "ts": r["ts"].isoformat(),
             "close": close,
@@ -522,10 +532,14 @@ def get_watchlist() -> list[dict]:
             "change_pct_30d": ((close - c30) / c30 * 100) if c30 else None,
             "pe": float(r["pe"]) if r["pe"] is not None else None,
             "market_cap": float(r["market_cap"]) if r["market_cap"] is not None else None,
-            "lppl_bubble_prob": f.get("lppl_bubble_prob"),
-            "gsadf_bsadf": f.get("gsadf_bsadf"),
-            "gsadf_explosive": f.get("gsadf_explosive", False),
-        })
+        }
+        # Detector output, carried by the contract the consumer declares
+        # (risk_dimensions.apply_feature_contract) rather than a list
+        # repeated here. A key added there flows through automatically;
+        # the hand-kept version shipped with drawdown_pct_rank written,
+        # read, and then dropped right here, which left STRESS rendering
+        # from the VIX alone and reporting `unknown` for the other half.
+        out.append(_apply_feature_contract(row, f))
     return out
 
 
@@ -679,64 +693,30 @@ def _macro_latest(indicator: str) -> float | None:
 def _build_risk_dimensions(
     watchlist: list[dict], vix: float | None, vix_status: str | None,
 ) -> dict:
-    """The four dimensions at MARKET level, for the top of the dashboard.
+    """The four dimensions at market level, for the top of the dashboard.
 
-    VALUATION and CRÉDITO are market-wide by nature. EXPLOSIVO and
-    STRESS are per-ticker, so the market view takes the WORST ticker on
-    each — the question the panel answers is "is anything explosive /
-    falling hard right now", not "is the average fine".
+    Thin shell: fetches the two macro values from SQLite and hands
+    everything to the pure `risk_dimensions.market_panel`. The
+    assembly lives there so it can be tested without a DB driver —
+    which is how the STRESS wiring bug got past the first round.
 
     Reads nothing new from Postgres: the per-ticker inputs come from
-    the watchlist rows already fetched, and the two macro values come
-    from SQLite. Never raises — a dimension with no data renders as
-    `unknown`, which is the state this panel exists to make visible.
+    the watchlist rows already fetched. Never raises — a dimension
+    with no data renders as `unknown`, the state this panel exists to
+    make visible.
     """
     import risk_dimensions as rd
     from bubble_scoring import _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE
 
-    cape = _macro_latest("cape_shiller")
-    credit_gap = _macro_latest("bis_credit_gap_us")
-
-    # Worst = highest BSADF. Only the latest point is available here, so
-    # the market tile can reach WATCH but never DANGER (which needs the
-    # persistence run). The Bubble Engine, which has the history, is
-    # where a red EXPLOSIVO can appear.
-    top = max(
-        (w for w in watchlist if w.get("gsadf_bsadf") is not None),
-        key=lambda w: w["gsadf_bsadf"], default=None,
+    return rd.market_panel(
+        watchlist,
+        cape=_macro_latest("cape_shiller"),
+        credit_gap_pct=_macro_latest("bis_credit_gap_us"),
+        vix=vix,
+        vix_status=vix_status,
+        crit95=_GSADF_CRIT95,
+        min_consec=_GSADF_MIN_CONSECUTIVE,
     )
-    explosive = rd.explosive_dimension(
-        [top["gsadf_bsadf"]] if top else None,
-        _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE,
-    )
-    if top:
-        explosive["ticker"] = top["ticker"]
-        explosive["applied"] += f" Pior da watchlist: {top['ticker']}."
-
-    # Worst = deepest percentile rank.
-    worst_dd = max(
-        (w for w in watchlist if w.get("drawdown_pct_rank") is not None),
-        key=lambda w: w["drawdown_pct_rank"], default=None,
-    )
-    stress = rd.stress_dimension(
-        worst_dd.get("drawdown_pct_rank") if worst_dd else None,
-        worst_dd.get("drawdown_pct") if worst_dd else None,
-        vix, vix_status,
-    )
-    if worst_dd:
-        stress["ticker"] = worst_dd["ticker"]
-        stress["applied"] += f" Pior da watchlist: {worst_dd['ticker']}."
-
-    return {
-        "dimensions": [
-            explosive,
-            rd.valuation_dimension(cape),
-            rd.credit_dimension(credit_gap),
-            stress,
-        ],
-        "legend": rd.LEGEND,
-        "scope": "mercado",
-    }
 
 
 def get_quant_dashboard() -> dict:

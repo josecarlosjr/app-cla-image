@@ -184,6 +184,138 @@ def test_legend_covers_every_dimension():
     assert keys == {"explosive", "valuation", "credit", "stress"}
 
 
+# --- the watchlist contract --------------------------------------------
+#
+# These exist because of a real bug: `drawdown_pct_rank` was computed by
+# the detector, stored in quant_features and returned by
+# get_latest_features_by_target — and then dropped by get_watchlist's
+# enrichment, which carried a hand-written list of keys. Nothing threw.
+# STRESS simply rendered from the VIX alone and reported the drawdown
+# half as `unknown`, which is indistinguishable from a genuine outage.
+
+def _row(ticker, **features):
+    """A watchlist row built the way get_watchlist() builds one.
+
+    Crucially the detector values go in as the FEATURES dict and reach
+    the row only through `apply_feature_contract` — the same seam the
+    real enrichment uses. Setting them directly on the row would
+    bypass the very step that dropped them, which is how the first
+    version of these tests passed against the bug.
+    """
+    return rd.apply_feature_contract(
+        {"ticker": ticker, "close": 100.0}, features,
+    )
+
+
+def test_market_panel_uses_the_drawdown_when_the_row_carries_it():
+    """The regression. Fails against the shipped bug."""
+    panel = rd.market_panel(
+        [_row("XLK", gsadf_bsadf=0.27, drawdown_pct_rank=92.89,
+              drawdown_pct=-15.4)],
+        cape=39.8, credit_gap_pct=-11.3, vix=19.9, vix_status="nervous",
+        crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
+    )
+    stress = next(d for d in panel["dimensions"] if d["key"] == "stress")
+    assert stress["drawdown_state"] != rd.UNKNOWN, \
+        "o STRESS ignorou o drawdown que a linha trazia"
+    assert stress["value"] == 92.89
+    assert stress["display"] == "p93"
+    assert "XLK" in stress["applied"]
+    assert stress["state"] == rd.WATCH     # p93 amber beats VIX 19.9 nervous
+
+
+def test_market_panel_reports_unknown_only_when_truly_absent():
+    panel = rd.market_panel(
+        [_row("XLK", gsadf_bsadf=0.27)],     # drawdown keys at default None
+        cape=39.8, credit_gap_pct=-11.3, vix=19.9, vix_status="nervous",
+        crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
+    )
+    stress = next(d for d in panel["dimensions"] if d["key"] == "stress")
+    assert stress["drawdown_state"] == rd.UNKNOWN
+    assert stress["state"] == rd.WATCH      # falls back to the VIX band
+
+
+def test_contract_carries_everything_the_detector_produced():
+    """The seam itself: what the detector wrote must reach the row.
+
+    `features` is shaped exactly like one entry of
+    get_latest_features_by_target. If a key the detector produces is
+    not in the contract, it never lands on the row — which is the bug,
+    and this is the assertion that catches it.
+    """
+    produced = {
+        "lppl_bubble_prob": 0.86,
+        "gsadf_bsadf": 0.27,
+        "gsadf_explosive": False,
+        "drawdown_pct": -15.4,
+        "drawdown_pct_rank": 92.89,
+    }
+    row = rd.apply_feature_contract({"ticker": "XLK"}, produced)
+    for key, value in produced.items():
+        assert key in row, (
+            f"{key} foi calculado e lido da BD mas não chega à linha — "
+            "falta em WATCHLIST_FEATURE_DEFAULTS"
+        )
+        assert row[key] == value
+
+
+def test_contract_covers_every_key_the_panel_reads():
+    """A key the panel reads but the contract doesn't carry shows up
+    here as a dimension stuck on `unknown` despite full detector data.
+
+    The VIX is deliberately absent: with it present, a panicking VIX
+    pulls STRESS to `danger` even when the drawdown half is missing,
+    which is precisely how the shipped bug looked healthy from the
+    outside. Combined states hide missing inputs, so the sub-states
+    are asserted too.
+    """
+    panel = rd.market_panel(
+        [_row("XLK", gsadf_bsadf=2.0, drawdown_pct_rank=99.0,
+              drawdown_pct=-30.0)],
+        cape=39.8, credit_gap_pct=3.0, vix=None, vix_status=None,
+        crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
+    )
+    for d in panel["dimensions"]:
+        assert d["state"] != rd.UNKNOWN, (
+            f"{d['key']} ficou unknown com dados completos do detetor — "
+            "lê uma chave que o contrato não transporta"
+        )
+    stress = next(d for d in panel["dimensions"] if d["key"] == "stress")
+    assert stress["drawdown_state"] != rd.UNKNOWN
+    assert stress["drawdown_pct"] == -30.0
+
+
+def test_contract_declares_both_halves_of_stress():
+    # The percentile drives the state; the raw % is what the tooltip
+    # shows. Losing either one degrades the tile.
+    assert "drawdown_pct_rank" in rd.WATCHLIST_FEATURE_DEFAULTS
+    assert "drawdown_pct" in rd.WATCHLIST_FEATURE_DEFAULTS
+
+
+def test_market_panel_picks_the_worst_ticker_not_the_first():
+    rows = [
+        _row("SPY", gsadf_bsadf=-0.35, drawdown_pct_rank=68.7, drawdown_pct=-4.0),
+        _row("XLK", gsadf_bsadf=0.27, drawdown_pct_rank=92.9, drawdown_pct=-15.4),
+        _row("TLT", gsadf_bsadf=-0.95, drawdown_pct_rank=38.8, drawdown_pct=-2.0),
+    ]
+    panel = rd.market_panel(
+        rows, cape=39.8, credit_gap_pct=-11.3, vix=19.9, vix_status="nervous",
+        crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
+    )
+    by = {d["key"]: d for d in panel["dimensions"]}
+    assert by["stress"]["ticker"] == "XLK"
+    assert by["explosive"]["ticker"] == "XLK"
+
+
+def test_market_panel_survives_an_empty_watchlist():
+    panel = rd.market_panel(
+        [], cape=None, credit_gap_pct=None, vix=None, vix_status=None,
+        crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
+    )
+    assert len(panel["dimensions"]) == 4
+    assert all(d["state"] == rd.UNKNOWN for d in panel["dimensions"])
+
+
 # --- drawdown stress ----------------------------------------------------
 
 def test_drawdown_needs_enough_history():

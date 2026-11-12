@@ -284,3 +284,104 @@ LEGEND = [
     {"key": "stress", "label": "STRESS",
      "short": "queda já em curso, face à história do próprio ativo"},
 ]
+
+
+# ---------------------------------------------------------------------------
+# What this module needs to find on a watchlist row — and the market panel
+# ---------------------------------------------------------------------------
+#
+# Declared HERE, by the consumer, and spread onto every row by
+# pg_database.get_watchlist(). The first cut hard-coded the key list in
+# the enrichment instead, and shipped with `drawdown_pct_rank` written
+# to quant_features, read by get_latest_features_by_target, and then
+# silently dropped on the floor — so STRESS rendered from the VIX alone
+# and reported `unknown` for the drawdown half. Nothing failed; the
+# panel just quietly knew less.
+#
+# A missing input degrading to "unknown" is the right behaviour for an
+# outage and the wrong one for a wiring mistake, and the panel cannot
+# tell them apart. So the list lives next to the code that reads it:
+# add a key here and the enrichment carries it automatically.
+WATCHLIST_FEATURE_DEFAULTS: dict = {
+    "lppl_bubble_prob": None,
+    "gsadf_bsadf": None,
+    "gsadf_explosive": False,
+    "drawdown_pct": None,
+    "drawdown_pct_rank": None,
+}
+
+
+def apply_feature_contract(row: dict, features: dict) -> dict:
+    """Copy every contracted detector key from `features` onto `row`.
+
+    The one place the hand-off happens, so there is a single seam to
+    test. `features` is one ticker's entry from
+    ``pg_database.get_latest_features_by_target``; anything it holds
+    that the contract does not name is deliberately NOT carried — the
+    contract is the full list of what readers may rely on.
+    """
+    for key, default in WATCHLIST_FEATURE_DEFAULTS.items():
+        row[key] = features.get(key, default)
+    return row
+
+
+def market_panel(
+    watchlist: list[dict],
+    cape: float | None,
+    credit_gap_pct: float | None,
+    vix: float | None,
+    vix_status: str | None,
+    crit95: float,
+    min_consec: int,
+) -> dict:
+    """The four dimensions at MARKET level, from already-fetched rows.
+
+    VALUATION and CRÉDITO are market-wide by nature. EXPLOSIVO and
+    STRESS are per-ticker, so the market view takes the WORST ticker on
+    each: the question the panel answers is "is anything explosive or
+    falling hard right now", not "is the average fine".
+
+    Pure — `watchlist` is whatever get_watchlist() returned. Rows
+    missing a key simply don't compete for worst, so a half-populated
+    watchlist degrades one dimension rather than failing.
+    """
+    top = max(
+        (w for w in watchlist if w.get("gsadf_bsadf") is not None),
+        key=lambda w: w["gsadf_bsadf"], default=None,
+    )
+    # Only the latest BSADF is on a watchlist row, so this tile can
+    # reach WATCH but never DANGER (which needs the persistence run).
+    # The Bubble Engine, which fetches the history, is where a red
+    # EXPLOSIVO can appear.
+    explosive = explosive_dimension(
+        [top["gsadf_bsadf"]] if top else None, crit95, min_consec,
+    )
+    if top:
+        explosive["ticker"] = top["ticker"]
+        explosive["applied"] += f" Pior da watchlist: {top['ticker']}."
+
+    worst_dd = max(
+        (w for w in watchlist if w.get("drawdown_pct_rank") is not None),
+        key=lambda w: w["drawdown_pct_rank"], default=None,
+    )
+    stress = stress_dimension(
+        worst_dd.get("drawdown_pct_rank") if worst_dd else None,
+        worst_dd.get("drawdown_pct") if worst_dd else None,
+        vix, vix_status,
+    )
+    if worst_dd:
+        stress["ticker"] = worst_dd["ticker"]
+        stress["applied"] += f" Pior da watchlist: {worst_dd['ticker']}."
+
+    return {
+        "dimensions": [
+            explosive,
+            valuation_dimension(cape),
+            credit_dimension(credit_gap_pct),
+            stress,
+        ],
+        "legend": LEGEND,
+        "scope": "mercado",
+    }
+
+
