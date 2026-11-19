@@ -108,26 +108,52 @@ _GSADF_CRIT99 = 1.281
 _GSADF_MIN_CONSECUTIVE = 2
 
 
-def _trailing_run_above(values: list[float], threshold: float) -> int:
-    """How many of the most recent values, consecutively, exceed
-    `threshold` (counting back from the newest)."""
+def observation(bsadf: float | None, window_return_pct: float | None) -> dict:
+    """One BSADF reading plus the direction of the window that produced it."""
+    return {"bsadf": bsadf, "window_return_pct": window_return_pct}
+
+
+def trailing_explosive_run(observations: list[dict] | None,
+                           threshold: float) -> int:
+    """Consecutive most-recent observations that are explosive AND RISING.
+
+    The direction half is not optional. An explosive root means the
+    series is diverging from its fixed point, which an accelerating
+    CRASH does just as emphatically as a bubble — measured, a +195%
+    rise and its -67% mirror score +3.17 and +3.05 on this estimator.
+    Counting a crash toward the run would make "momentum" light up
+    precisely when a market is collapsing, which is what it did for
+    BTC (+2.18) and ETH (+1.69) through a -21% / -24% month.
+
+    Fails CLOSED: an observation whose direction is unknown
+    (``window_return_pct is None``, e.g. a feature row written before
+    the direction was recorded) breaks the run rather than extending
+    it. Not knowing which way the price went is not evidence of a
+    bubble.
+    """
     run = 0
-    for v in reversed(values):
-        if v is None or v <= threshold:
+    for o in reversed(observations or []):
+        bsadf = o.get("bsadf")
+        direction = o.get("window_return_pct")
+        if bsadf is None or bsadf <= threshold:
+            break
+        if direction is None or direction <= 0:
             break
         run += 1
     return run
 
 
 def momentum_signal(
-    bsadf_recent: list[float] | None, n_points: int | None,
+    bsadf_recent: list[dict] | None, n_points: int | None,
 ) -> Signal:
     """Explosive price growth via the BSADF statistic (PSY 2015).
 
-    `bsadf_recent` is the recent BSADF history for one ticker, oldest
-    first, as stored by quant_detectors. The newest value sets the
+    `bsadf_recent` is the recent history for one ticker, oldest first,
+    each entry `{bsadf, window_return_pct}` as stored by
+    quant_detectors (see `observation`). The newest value sets the
     score; the ones before it decide whether the exceedance has
-    persisted.
+    persisted; and every one of them must be RISING — see
+    `trailing_explosive_run`, and why that is not a detail.
 
     Why BSADF and not the LPPL probability this used to take: that
     "probability" is the R² of the best log-periodic fit. R² measures
@@ -162,20 +188,37 @@ def momentum_signal(
     # Any valid run earns a floor of confidence so it isn't ignored.
     conf = max(0.2, conf)
 
-    latest = bsadf_recent[-1]
-    run = _trailing_run_above(bsadf_recent, _GSADF_CRIT95)
+    last = bsadf_recent[-1]
+    latest = last.get("bsadf")
+    direction = last.get("window_return_pct")
+    if latest is None:
+        return Signal("momentum", 0.0, 0.0,
+                      "insufficient price history for the BSADF test")
+    run = trailing_explosive_run(bsadf_recent, _GSADF_CRIT95)
 
     if run < _GSADF_MIN_CONSECUTIVE:
-        if run == 0:
+        if latest <= _GSADF_CRIT95:
             detail = (
                 f"BSADF {latest:+.2f} < {_GSADF_CRIT95:.3f} (p95 nulo) "
                 f"— sem raiz explosiva"
             )
+        elif direction is None:
+            detail = (
+                f"BSADF {latest:+.2f} > {_GSADF_CRIT95:.3f} mas sem "
+                f"direção registada na janela — não conta"
+            )
+        elif direction <= 0:
+            # The whole point of the guard, said out loud.
+            detail = (
+                f"BSADF {latest:+.2f} > {_GSADF_CRIT95:.3f} mas a janela "
+                f"do supremo CAIU {direction:+.1f}% — queda explosiva, "
+                f"não bolha"
+            )
         else:
             detail = (
-                f"BSADF {latest:+.2f} > {_GSADF_CRIT95:.3f} mas só em "
-                f"{run} observação — aguarda persistência "
-                f"({_GSADF_MIN_CONSECUTIVE} consecutivas)"
+                f"BSADF {latest:+.2f} > {_GSADF_CRIT95:.3f} e a subir "
+                f"{direction:+.1f}%, mas só em {run} observação — aguarda "
+                f"persistência ({_GSADF_MIN_CONSECUTIVE} consecutivas)"
             )
         return Signal("momentum", 0.0, conf, detail)
 
@@ -185,7 +228,8 @@ def momentum_signal(
     return Signal(
         "momentum", score, conf,
         f"BSADF {latest:+.2f} acima do p95 nulo ({_GSADF_CRIT95:.3f}) "
-        f"em {run} observações consecutivas",
+        f"em {run} observações consecutivas, com a janela a subir "
+        f"{direction:+.1f}%",
     )
 
 
@@ -407,7 +451,8 @@ def run_selftest() -> dict:
         "clear_bubble",
         "composite alto (>0.6), cobertura 3/3, DISPARA",
         [
-            momentum_signal([1.222, 1.222], 252),
+            momentum_signal(
+            [observation(1.222, 42.0), observation(1.222, 42.0)], 252),
             temporal_signal(3.2),
             graph_fragility_signal(["a->b", "b->c", "c->d",
                                     "d->e", "e->f", "f->g"]),
@@ -421,7 +466,8 @@ def run_selftest() -> dict:
         "calm_market",
         "composite baixo (<0.25), NAO dispara",
         [
-            momentum_signal([-0.80, -0.60], 252),
+            momentum_signal(
+            [observation(-0.80, 42.0), observation(-0.60, 42.0)], 252),
             temporal_signal(1.0),
             graph_fragility_signal([]),
         ],
@@ -448,7 +494,8 @@ def run_selftest() -> dict:
         "partial_momentum_only",
         "composite ~=0.80 (nao diluido) mas conf ~0.40, NAO dispara",
         [
-            momentum_signal([1.15, 1.15], 252),
+            momentum_signal(
+            [observation(1.15, 42.0), observation(1.15, 42.0)], 252),
             temporal_signal(None),
             graph_fragility_signal([]),
         ],
@@ -466,7 +513,8 @@ def run_selftest() -> dict:
         "conflicting_signals",
         "momentum alto + temporal flat -> composite amortecido (0.4-0.75), NAO dispara",
         [
-            momentum_signal([1.216, 1.216], 252),
+            momentum_signal(
+            [observation(1.216, 42.0), observation(1.216, 42.0)], 252),
             temporal_signal(1.0),
             graph_fragility_signal([]),
         ],
@@ -496,7 +544,8 @@ def run_selftest() -> dict:
         "full_quant_bubble",
         "5/5 sinais quentes -> composite alto, cobertura 5/5, DISPARA",
         [
-            momentum_signal([1.216, 1.216], 252),
+            momentum_signal(
+            [observation(1.216, 42.0), observation(1.216, 42.0)], 252),
             temporal_signal(3.0),
             graph_fragility_signal(["a->b", "b->c", "c->d",
                                     "d->e", "e->f", "f->g"]),

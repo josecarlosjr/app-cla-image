@@ -14,6 +14,7 @@ import numpy as np
 import risk_dimensions as rd
 from bubble_scoring import (
     _GSADF_CRIT95, _GSADF_CRIT99, _GSADF_MIN_CONSECUTIVE, momentum_signal,
+    observation, trailing_explosive_run,
 )
 from quant_detectors import _GSADF_CRIT_95, drawdown_stress
 
@@ -47,57 +48,186 @@ def _bsadf_for(score: float) -> float:
     return C95 + score * (C99 - C95)
 
 
+def up(*bsadf):
+    """Observations that are explosive AND rising (+30% window)."""
+    return [observation(b, 30.0) for b in bsadf]
+
+
+def down(*bsadf):
+    """The same readings, but the supremum came from a FALLING window —
+    an accelerating crash, which scores just as high on the raw BSADF."""
+    return [observation(b, -21.0) for b in bsadf]
+
+
 def test_momentum_abstains_without_data():
-    for series, n in ((None, 252), ([], 252), ([1.4, 1.4], None),
-                      ([1.4, 1.4], 10)):
+    for series, n in ((None, 252), ([], 252), (up(1.4, 1.4), None),
+                      (up(1.4, 1.4), 10)):
         s = momentum_signal(series, n)
         assert s.score == 0.0 and s.confidence == 0.0
 
 
 def test_momentum_below_threshold_scores_zero_but_keeps_confidence():
     """Measured calm is data, not absence — same rule as credit_signal."""
-    s = momentum_signal([-1.0, -0.8], 252)
+    s = momentum_signal(up(-1.0, -0.8), 252)
     assert s.score == 0.0
     assert s.confidence > 0.5
 
 
 def test_momentum_single_exceedance_does_not_score():
-    s = momentum_signal([-0.5, 2.0], 252)
+    s = momentum_signal(up(-0.5, 2.0), 252)
     assert s.score == 0.0
     assert "persistência" in s.detail
 
 
 def test_momentum_broken_run_does_not_score():
     # Above, dips below, above again: the run restarts at 1.
-    s = momentum_signal([2.0, 0.1, 2.0], 252)
+    s = momentum_signal(up(2.0, 0.1, 2.0), 252)
     assert s.score == 0.0
 
 
 def test_momentum_persisted_exceedance_scores():
-    s = momentum_signal([2.0, 2.0], 252)
+    s = momentum_signal(up(2.0, 2.0), 252)
     assert s.score > 0.0
     assert "consecutivas" in s.detail
 
 
 def test_momentum_requires_exactly_min_consecutive():
-    run_of = lambda k: momentum_signal([-1.0] + [2.0] * k, 252).score
+    run_of = lambda k: momentum_signal(up(*([-1.0] + [2.0] * k)), 252).score
     assert run_of(_GSADF_MIN_CONSECUTIVE - 1) == 0.0
     assert run_of(_GSADF_MIN_CONSECUTIVE) > 0.0
 
 
 def test_momentum_is_anchored_on_the_null_distribution():
     """0 at p95, 1 at p99, linear between — the whole point of the change."""
-    assert momentum_signal([C95, C95], 252).score == 0.0   # strict >
-    assert abs(momentum_signal([_bsadf_for(0.5)] * 2, 252).score - 0.5) < 1e-9
-    assert momentum_signal([C99, C99], 252).score == 1.0
-    assert momentum_signal([99.0, 99.0], 252).score == 1.0  # clamped
+    assert momentum_signal(up(C95, C95), 252).score == 0.0   # strict >
+    assert abs(momentum_signal(up(*([_bsadf_for(0.5)] * 2)), 252).score - 0.5) < 1e-9
+    assert momentum_signal(up(C99, C99), 252).score == 1.0
+    assert momentum_signal(up(99.0, 99.0), 252).score == 1.0  # clamped
 
 
 def test_momentum_confidence_ramps_with_points_not_with_score():
-    low = momentum_signal([2.0, 2.0], 50)
-    high = momentum_signal([2.0, 2.0], 250)
+    low = momentum_signal(up(2.0, 2.0), 50)
+    high = momentum_signal(up(2.0, 2.0), 250)
     assert low.score == high.score
     assert low.confidence < high.confidence
+
+
+# --- the direction guard ------------------------------------------------
+#
+# These exist because of a real incident. An explosive root (β > 1) is
+# divergence from the fixed point, in EITHER direction, so an
+# accelerating crash produces the same statistic as a bubble: measured
+# on this estimator, a +195% rise scores +3.17 and its -67% mirror
+# +3.05. BTC hit +2.18 and ETH +1.69 while falling 21% and 24% in a
+# month, and the panel captioned it "o preço acelera".
+#
+# Every one of these fails if the guard is removed.
+
+_CRASH_READINGS = (2.18, 1.69, 3.05, 20.87)   # observed / simulated
+
+
+def test_momentum_does_not_score_an_accelerating_crash():
+    for b in _CRASH_READINGS:
+        s = momentum_signal(down(b, b), 252)
+        assert s.score == 0.0, (
+            f"BSADF {b} com a janela a CAIR deu score {s.score} — "
+            "o guard de direcção saiu"
+        )
+        assert "queda explosiva" in s.detail
+
+
+def test_momentum_still_scores_the_same_reading_when_rising():
+    """The guard must cost nothing on real bubbles."""
+    for b in _CRASH_READINGS:
+        assert momentum_signal(up(b, b), 252).score > 0.0
+
+
+def test_momentum_run_breaks_when_the_direction_flips():
+    """A bubble that just burst stops counting, rather than coasting on
+    yesterday's rise."""
+    burst = up(2.0)[0], up(2.0)[1 - 1], down(2.0)[0]   # up, up, down
+    assert momentum_signal(list(burst), 252).score == 0.0
+
+
+def test_momentum_fails_closed_on_unknown_direction():
+    """Feature rows written before the direction was recorded must not
+    be read as bubbles. Not knowing which way the price went is not
+    evidence."""
+    unknown = [observation(2.0, None), observation(2.0, None)]
+    s = momentum_signal(unknown, 252)
+    assert s.score == 0.0
+    assert "sem direção" in s.detail
+
+
+def test_trailing_run_requires_both_halves():
+    assert trailing_explosive_run(up(2.0, 2.0, 2.0), C95) == 3
+    assert trailing_explosive_run(down(2.0, 2.0, 2.0), C95) == 0
+    assert trailing_explosive_run(up(2.0, 2.0) + down(2.0), C95) == 0
+    assert trailing_explosive_run(down(2.0) + up(2.0, 2.0), C95) == 2
+
+
+def test_explosive_tile_calls_a_crash_calm_not_explosive():
+    """The tile said 'o preço acelera' during a -21% month. It must not."""
+    d = rd.explosive_dimension(down(2.18, 2.18), C95, _GSADF_MIN_CONSECUTIVE)
+    assert d["state"] == rd.CALM, (
+        f"tile em {d['state']} com a janela a cair — o guard saiu"
+    )
+    assert "queda a acelerar" in d["applied"]
+    assert "não uma bolha" in d["applied"]
+
+
+def test_explosive_tile_says_what_it_excludes():
+    """A reader must be able to learn that falls are excluded."""
+    d = rd.explosive_dimension(up(0.1), C95, _GSADF_MIN_CONSECUTIVE)
+    assert "SOBE" in d["measures"]
+    assert "queda a acelerar" in d["measures"].lower()
+
+
+def test_explosive_tile_unknown_when_direction_missing():
+    d = rd.explosive_dimension(
+        [observation(2.0, None)], C95, _GSADF_MIN_CONSECUTIVE)
+    assert d["state"] == rd.UNKNOWN
+
+
+def test_market_panel_does_not_rank_a_crashing_ticker_as_most_explosive():
+    """SPY rising modestly must outrank BTC crashing hard."""
+    rows = [
+        _row("SPY", gsadf_bsadf=0.80, gsadf_window_return_pct=18.0),
+        _row("BTC-USD", gsadf_bsadf=2.18, gsadf_window_return_pct=-20.9),
+    ]
+    panel = rd.market_panel(
+        rows, cape=39.8, credit_gap_pct=-11.3, vix=19.9,
+        vix_status="nervous", crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
+    )
+    ex = next(d for d in panel["dimensions"] if d["key"] == "explosive")
+    assert ex["ticker"] == "SPY", (
+        f"o painel escolheu {ex['ticker']} — um ticker em queda não é "
+        "'o mais explosivo'"
+    )
+
+
+def test_market_panel_reports_the_fall_when_nothing_is_rising():
+    """With only crashing tickers the tile still reports a measurement,
+    and says it was a fall — silence would hide the reading."""
+    rows = [_row("BTC-USD", gsadf_bsadf=2.18, gsadf_window_return_pct=-20.9)]
+    panel = rd.market_panel(
+        rows, cape=39.8, credit_gap_pct=-11.3, vix=19.9,
+        vix_status="nervous", crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
+    )
+    ex = next(d for d in panel["dimensions"] if d["key"] == "explosive")
+    assert ex["state"] == rd.CALM
+    assert ex["value"] == 2.18
+    assert "caiu" in ex["applied"]
+
+
+def test_contract_carries_the_direction():
+    """The guard is only as good as the plumbing that feeds it."""
+    assert "gsadf_window_return_pct" in rd.WATCHLIST_FEATURE_DEFAULTS
+    row = rd.apply_feature_contract(
+        {"ticker": "BTC-USD"},
+        {"gsadf_bsadf": 2.18, "gsadf_window_return_pct": -20.9},
+    )
+    assert row["gsadf_window_return_pct"] == -20.9
 
 
 # --- worst() ------------------------------------------------------------
@@ -118,10 +248,10 @@ def test_worst_ignores_unknown_unless_everything_is():
 def test_explosive_states_follow_the_persistence_rule():
     mk = lambda s: rd.explosive_dimension(s, C95, _GSADF_MIN_CONSECUTIVE)
     assert mk(None)["state"] == rd.UNKNOWN
-    assert mk([-1.0])["state"] == rd.CALM
-    assert mk([2.0])["state"] == rd.WATCH            # one crossing only
-    assert mk([2.0, 2.0])["state"] == rd.DANGER
-    assert mk([2.0, 0.1])["state"] == rd.CALM        # fell back below
+    assert mk(up(-1.0))["state"] == rd.CALM
+    assert mk(up(2.0))["state"] == rd.WATCH            # one crossing only
+    assert mk(up(2.0, 2.0))["state"] == rd.DANGER
+    assert mk(up(2.0, 0.1))["state"] == rd.CALM        # fell back below
 
 
 def test_valuation_states():
@@ -159,7 +289,7 @@ def test_stress_survives_a_missing_input():
 def test_every_dimension_declares_its_anchor():
     """The honesty contract: no tile without a stated anchor."""
     dims = [
-        rd.explosive_dimension([0.1], C95, 2),
+        rd.explosive_dimension(up(0.1), C95, 2),
         rd.valuation_dimension(39.8),
         rd.credit_dimension(-11.3),
         rd.stress_dimension(50.0, -5.0, 20.0, "nervous"),
@@ -210,7 +340,7 @@ def _row(ticker, **features):
 def test_market_panel_uses_the_drawdown_when_the_row_carries_it():
     """The regression. Fails against the shipped bug."""
     panel = rd.market_panel(
-        [_row("XLK", gsadf_bsadf=0.27, drawdown_pct_rank=92.89,
+        [_row("XLK", gsadf_bsadf=0.27, gsadf_window_return_pct=25.0, drawdown_pct_rank=92.89,
               drawdown_pct=-15.4)],
         cape=39.8, credit_gap_pct=-11.3, vix=19.9, vix_status="nervous",
         crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
@@ -226,7 +356,7 @@ def test_market_panel_uses_the_drawdown_when_the_row_carries_it():
 
 def test_market_panel_reports_unknown_only_when_truly_absent():
     panel = rd.market_panel(
-        [_row("XLK", gsadf_bsadf=0.27)],     # drawdown keys at default None
+        [_row("XLK", gsadf_bsadf=0.27, gsadf_window_return_pct=12.0)],     # drawdown keys at default None
         cape=39.8, credit_gap_pct=-11.3, vix=19.9, vix_status="nervous",
         crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
     )
@@ -246,6 +376,7 @@ def test_contract_carries_everything_the_detector_produced():
     produced = {
         "lppl_bubble_prob": 0.86,
         "gsadf_bsadf": 0.27,
+        "gsadf_window_return_pct": 12.0,
         "gsadf_explosive": False,
         "drawdown_pct": -15.4,
         "drawdown_pct_rank": 92.89,
@@ -270,7 +401,7 @@ def test_contract_covers_every_key_the_panel_reads():
     are asserted too.
     """
     panel = rd.market_panel(
-        [_row("XLK", gsadf_bsadf=2.0, drawdown_pct_rank=99.0,
+        [_row("XLK", gsadf_bsadf=2.0, gsadf_window_return_pct=25.0, drawdown_pct_rank=99.0,
               drawdown_pct=-30.0)],
         cape=39.8, credit_gap_pct=3.0, vix=None, vix_status=None,
         crit95=C95, min_consec=_GSADF_MIN_CONSECUTIVE,
@@ -294,9 +425,9 @@ def test_contract_declares_both_halves_of_stress():
 
 def test_market_panel_picks_the_worst_ticker_not_the_first():
     rows = [
-        _row("SPY", gsadf_bsadf=-0.35, drawdown_pct_rank=68.7, drawdown_pct=-4.0),
-        _row("XLK", gsadf_bsadf=0.27, drawdown_pct_rank=92.9, drawdown_pct=-15.4),
-        _row("TLT", gsadf_bsadf=-0.95, drawdown_pct_rank=38.8, drawdown_pct=-2.0),
+        _row("SPY", gsadf_bsadf=-0.35, gsadf_window_return_pct=25.0, drawdown_pct_rank=68.7, drawdown_pct=-4.0),
+        _row("XLK", gsadf_bsadf=0.27, gsadf_window_return_pct=25.0, drawdown_pct_rank=92.9, drawdown_pct=-15.4),
+        _row("TLT", gsadf_bsadf=-0.95, gsadf_window_return_pct=25.0, drawdown_pct_rank=38.8, drawdown_pct=-2.0),
     ]
     panel = rd.market_panel(
         rows, cape=39.8, credit_gap_pct=-11.3, vix=19.9, vix_status="nervous",

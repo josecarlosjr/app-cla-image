@@ -211,30 +211,63 @@ def _adf_stat(y: np.ndarray) -> float:
 
 
 def gsadf(log_prices: np.ndarray, r0: int = _R0) -> dict:
-    """Compute the BSADF time series and return GSADF stats."""
+    """Compute the BSADF time series and return GSADF stats.
+
+    Also reports WHICH window produced the latest supremum and what the
+    price did across it, because the statistic alone does not say.
+
+    An explosive root (β > 1) means the series is diverging from its
+    fixed point — in EITHER direction. An accelerating fall has Δy
+    growing more negative as y falls, so cov(Δy, y_{t-1}) > 0 and the
+    t-stat is just as positive as in a bubble. Measured on synthetic
+    paths with this very estimator: an accelerating rise of +195%
+    scores +3.17, and its mirror image, a fall of -67%, scores +3.05 —
+    ρ of +0.0112 against +0.0108. Indistinguishable.
+
+    That is not a defect of the ADF regression and cannot be fixed
+    inside it: the sign IS preserved, it just signs divergence rather
+    than direction. So the direction is reported alongside and the
+    consumers gate on it (bubble_scoring.momentum_signal,
+    risk_dimensions.explosive_dimension).
+
+    ``window_return_pct`` is the return across the winning window, in
+    percent. Positive = the supremum came from an accelerating RISE.
+    """
     n = len(log_prices)
     if n < r0 + 30:
         return {"fitted": False, "gsadf": 0.0, "bsadf_latest": 0.0,
-                "critical_95": _GSADF_CRIT_95, "explosive": False}
+                "critical_95": _GSADF_CRIT_95, "explosive": False,
+                "window_return_pct": None, "window_bars": None}
 
     bsadf_series = []
+    best_start = 0
     for t in range(r0, n + 1):
         max_adf = -np.inf
+        arg = 0
         for r1 in range(0, t - r0 + 1):
             stat = _adf_stat(log_prices[r1:t])
             if stat > max_adf:
-                max_adf = stat
+                max_adf, arg = stat, r1
         bsadf_series.append(float(max_adf))
+        best_start = arg          # keep the argmax of the LAST endpoint
 
     gsadf_value = float(max(bsadf_series))
     bsadf_latest = float(bsadf_series[-1])
+
+    window = log_prices[best_start:n]
+    window_return_pct = float(np.exp(window[-1] - window[0]) - 1.0) * 100.0
 
     return {
         "fitted": True,
         "gsadf": gsadf_value,
         "bsadf_latest": bsadf_latest,
         "critical_95": _GSADF_CRIT_95,
-        "explosive": bool(bsadf_latest > _GSADF_CRIT_95),
+        # Explosive AND rising. Without the second half this flag lit up
+        # on BTC and ETH during a -20%/-24% month.
+        "explosive": bool(bsadf_latest > _GSADF_CRIT_95
+                          and window_return_pct > 0),
+        "window_return_pct": round(window_return_pct, 4),
+        "window_bars": int(n - best_start),
     }
 
 

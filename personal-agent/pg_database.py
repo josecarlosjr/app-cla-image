@@ -347,11 +347,14 @@ def _apply_feature_contract(row: dict, features: dict) -> dict:
 
 def get_recent_feature_by_target(
     feature_id: str, n: int = 5, days: int = 90,
-) -> dict[str, list[float]]:
-    """The last `n` values of one feature for EVERY target, one query.
+) -> dict[str, list[dict]]:
+    """The last `n` observations of one feature for EVERY target.
 
-    Returns ``{target: [oldest, ..., newest]}``; targets with no rows in
-    the window are absent.
+    Returns ``{target: [{"value", "meta"}, ...]}`` oldest first;
+    targets with no rows in the window are absent. The meta travels
+    with the value because the momentum guard needs more than the
+    number: a BSADF reading without the direction of its window cannot
+    be told apart from the same reading during a crash.
 
     Exists for the momentum signal's persistence rule, which needs more
     than the latest point: a BSADF exceedance only scores once it has
@@ -368,8 +371,8 @@ def get_recent_feature_by_target(
     out: dict[str, list[float]] = {}
     with connect() as conn, conn.cursor() as cur:
         cur.execute(
-            """SELECT target, value FROM (
-                   SELECT target, ts, value,
+            """SELECT target, value, meta FROM (
+                   SELECT target, ts, value, meta,
                           row_number() OVER (
                               PARTITION BY target ORDER BY ts DESC
                           ) AS rn
@@ -381,7 +384,9 @@ def get_recent_feature_by_target(
             (feature_id, cutoff, n),
         )
         for r in cur.fetchall():
-            out.setdefault(r["target"], []).append(float(r["value"]))
+            out.setdefault(r["target"], []).append(
+                {"value": float(r["value"]), "meta": r["meta"] or {}}
+            )
     return out
 
 
@@ -418,6 +423,12 @@ def get_latest_features_by_target() -> dict[str, dict]:
             elif r["feature_id"] == "gsadf_stat":
                 bucket["gsadf_bsadf"] = float(r["value"])
                 bucket["gsadf_explosive"] = bool(meta.get("explosive", False))
+                # None on rows written before the direction was recorded
+                # — the consumers fail closed on that, deliberately.
+                wr = meta.get("window_return_pct")
+                bucket["gsadf_window_return_pct"] = (
+                    float(wr) if wr is not None else None
+                )
             elif r["feature_id"] == "drawdown_pct_rank":
                 bucket["drawdown_pct_rank"] = float(r["value"])
                 bucket["drawdown_pct"] = meta.get("drawdown_pct")

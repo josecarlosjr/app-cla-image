@@ -402,6 +402,12 @@ export type RiskDimension = {
   caveat?: string | null;
   ticker?: string;
   run?: number;
+  // Return across the window that produced the BSADF supremum. The tile
+  // only calls a rise explosive: an explosive root is divergence from
+  // the fixed point in EITHER direction, so an accelerating crash
+  // scores as high as a bubble. Negative here means the reading came
+  // from a fall, and the backend's `applied` text says so.
+  window_return_pct?: number | null;
   country?: string;
   drawdown_pct?: number | null;
   vix?: number | null;

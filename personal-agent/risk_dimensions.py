@@ -76,18 +76,29 @@ def _dim(key, label, state, value, display, measures,
 # never disagree about what "explosive" means.
 
 def explosive_dimension(
-    bsadf_recent: list[float] | None, crit95: float, min_consec: int,
+    bsadf_recent: list[dict] | None, crit95: float, min_consec: int,
 ) -> dict:
-    """Amber on a single exceedance, red once it has persisted.
+    """Amber on a single exceedance, red once it has persisted — and
+    only ever when the price is RISING.
 
-    The split is not decoration: measured daily BSADF moves are
-    0.05–0.18 but spike past 2.0, so one crossing is inside the noise
-    and two consecutive ones are not. Same rule the momentum signal
-    scores on.
+    The persistence split is not decoration: measured daily BSADF moves
+    are 0.05–0.18 but spike past 2.0, so one crossing is inside the
+    noise and two consecutive ones are not.
+
+    The direction guard is not decoration either. An explosive root is
+    divergence from the fixed point in either direction, so an
+    accelerating crash scores as high as a bubble. Without this, the
+    tile read "EXPLOSIVO 🟡 BTC-USD" with the tooltip "o preço acelera"
+    while BTC fell 21% in a month. A panel that says the opposite of
+    what is happening is worse than one that says nothing.
+
+    Each entry of `bsadf_recent` is `{bsadf, window_return_pct}`.
     """
     measures = (
-        "Testa se o preço sobe de forma acelerada — raiz explosiva, "
-        "não apenas uma subida (teste BSADF, Phillips-Shi-Yu 2015)."
+        "Testa se o preço SOBE de forma acelerada — raiz explosiva a "
+        "subir, não apenas uma subida (teste BSADF, Phillips-Shi-Yu "
+        "2015). Uma queda a acelerar também produz raiz explosiva, e é "
+        "excluída pela direção da janela."
     )
     anchor = (
         f"Limiar {crit95:.3f} = percentil 95 da distribuição nula, medido "
@@ -97,34 +108,58 @@ def explosive_dimension(
     if not bsadf_recent:
         return _dim("explosive", "EXPLOSIVO", UNKNOWN, None, "—", measures,
                     "Sem leitura do detetor para este ativo.",
-                    anchor, "external", run=0)
+                    anchor, "external", run=0, window_return_pct=None)
 
-    latest = bsadf_recent[-1]
+    last = bsadf_recent[-1]
+    latest = last.get("bsadf")
+    direction = last.get("window_return_pct")
+    if latest is None:
+        return _dim("explosive", "EXPLOSIVO", UNKNOWN, None, "—", measures,
+                    "Sem leitura do detetor para este ativo.",
+                    anchor, "external", run=0, window_return_pct=None)
+
     run = 0
-    for v in reversed(bsadf_recent):
-        if v is None or v <= crit95:
+    for o in reversed(bsadf_recent):
+        b, d = o.get("bsadf"), o.get("window_return_pct")
+        if b is None or b <= crit95 or d is None or d <= 0:
             break
         run += 1
 
     display = f"{latest:+.2f}"
-    if run == 0:
+    if latest <= crit95:
         state, applied = CALM, (
             f"Atual {display}, abaixo do limiar {crit95:.3f}. "
             "Sem raiz explosiva."
         )
+    elif direction is None:
+        state, applied = UNKNOWN, (
+            f"Atual {display}, acima do limiar {crit95:.3f}, mas sem a "
+            "direção da janela registada — impossível dizer se é subida "
+            "ou queda."
+        )
+    elif direction <= 0:
+        state, applied = CALM, (
+            f"Atual {display}, acima do limiar {crit95:.3f}, MAS a janela "
+            f"do supremo caiu {direction:+.1f}%. Isto é uma queda a "
+            "acelerar, não uma bolha: a raiz explosiva mede divergência, "
+            "não direção."
+        )
     elif run < min_consec:
         state, applied = WATCH, (
-            f"Atual {display}, acima do limiar {crit95:.3f} mas só em "
-            f"{run} observação. Uma travessia isolada ainda cabe no ruído "
-            f"diário; são precisas {min_consec} consecutivas."
+            f"Atual {display}, acima do limiar {crit95:.3f} e a subir "
+            f"{direction:+.1f}%, mas só em {run} observação. Uma travessia "
+            f"isolada ainda cabe no ruído diário; são precisas "
+            f"{min_consec} consecutivas."
         )
     else:
         state, applied = DANGER, (
             f"Atual {display}, acima do limiar {crit95:.3f} em {run} "
-            "observações consecutivas."
+            f"observações consecutivas, com a janela a subir "
+            f"{direction:+.1f}%."
         )
     return _dim("explosive", "EXPLOSIVO", state, latest, display, measures,
-                applied, anchor, "external", run=run)
+                applied, anchor, "external", run=run,
+                window_return_pct=direction)
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +340,10 @@ LEGEND = [
 WATCHLIST_FEATURE_DEFAULTS: dict = {
     "lppl_bubble_prob": None,
     "gsadf_bsadf": None,
+    # The direction of the window that produced gsadf_bsadf. Without it
+    # the panel cannot tell an accelerating rise from an accelerating
+    # fall, which is how EXPLOSIVO came to light up on BTC mid-crash.
+    "gsadf_window_return_pct": None,
     "gsadf_explosive": False,
     "drawdown_pct": None,
     "drawdown_pct_rank": None,
@@ -345,16 +384,33 @@ def market_panel(
     missing a key simply don't compete for worst, so a half-populated
     watchlist degrades one dimension rather than failing.
     """
-    top = max(
-        (w for w in watchlist if w.get("gsadf_bsadf") is not None),
-        key=lambda w: w["gsadf_bsadf"], default=None,
-    )
+    # "Worst" means the most explosive RISE. A ticker whose supremum
+    # came from a collapse is not a weaker bubble, it is not a bubble;
+    # ranking it here would put a crashing asset at the top of a panel
+    # that claims to be about accelerating prices.
+    rising = [
+        w for w in watchlist
+        if w.get("gsadf_bsadf") is not None
+        and (w.get("gsadf_window_return_pct") or 0) > 0
+    ]
+    top = max(rising, key=lambda w: w["gsadf_bsadf"], default=None)
+    if top is None:
+        # Nothing rising explosively: fall back to the highest reading
+        # so the tile still reports a measurement, and let
+        # explosive_dimension state that it was a fall.
+        top = max(
+            (w for w in watchlist if w.get("gsadf_bsadf") is not None),
+            key=lambda w: w["gsadf_bsadf"], default=None,
+        )
     # Only the latest BSADF is on a watchlist row, so this tile can
     # reach WATCH but never DANGER (which needs the persistence run).
     # The Bubble Engine, which fetches the history, is where a red
     # EXPLOSIVO can appear.
     explosive = explosive_dimension(
-        [top["gsadf_bsadf"]] if top else None, crit95, min_consec,
+        [{"bsadf": top["gsadf_bsadf"],
+          "window_return_pct": top.get("gsadf_window_return_pct")}]
+        if top else None,
+        crit95, min_consec,
     )
     if top:
         explosive["ticker"] = top["ticker"]
