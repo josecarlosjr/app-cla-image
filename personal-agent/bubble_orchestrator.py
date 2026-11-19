@@ -309,6 +309,7 @@ def gather_and_score() -> dict:
     # per ticker. Handed only to the equity tickers (see _CAPE_TICKERS).
     cape = _cape_shiller()
 
+    import bubble_scoring as bs
     import risk_dimensions as rd
     from bubble_scoring import _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE
     vix_latest, vix_status = _latest_vix()
@@ -317,9 +318,17 @@ def gather_and_score() -> dict:
     for w in watchlist:
         t = w["ticker"]
         ticker_cape = cape if t in _CAPE_TICKERS else None
+        # {value, meta} rows -> the {bsadf, window_return_pct} shape the
+        # scorer and the tile both read. The direction is None on rows
+        # written before it was recorded; both consumers fail closed.
+        obs = [
+            bs.observation(o["value"],
+                           (o["meta"] or {}).get("window_return_pct"))
+            for o in (bsadf_hist.get(t) or [])
+        ]
         rows.append(score_ticker(
             t,
-            bsadf_recent=bsadf_hist.get(t),
+            bsadf_recent=obs,
             n_points=min(bar_counts.get(t, 0), _DETECTOR_WINDOW),
             accel_ratio=temporal_ratio_for_ticker(t, accel),
             graph_edges=_graph_edges(t, graph),
@@ -341,7 +350,7 @@ def gather_and_score() -> dict:
         # per asset.
         rows[-1]["dimensions"] = [
             rd.explosive_dimension(
-                bsadf_hist.get(t), _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE,
+                obs, _GSADF_CRIT95, _GSADF_MIN_CONSECUTIVE,
             ),
             rd.stress_dimension(
                 w.get("drawdown_pct_rank"), w.get("drawdown_pct"),

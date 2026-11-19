@@ -8,6 +8,7 @@ Runnable with pytest, or standalone (`python test_bubble_orchestrator.py`)
 since the cluster image doesn't ship pytest.
 """
 
+from bubble_scoring import observation
 from bubble_orchestrator import (
     TICKER_NEWS_CATEGORIES,
     temporal_ratio_for_ticker,
@@ -88,7 +89,9 @@ def test_score_ticker_clear_bubble_flags():
     # All five dimensions hot — price, news, valuation and credit.
     r = score_ticker(
         "QQQ",
-        bsadf_recent=[1.40, 1.45], n_points=252,
+        bsadf_recent=[observation(1.40, 42.0),
+                       observation(1.45, 42.0)],
+        n_points=252,
         accel_ratio=3.2,
         graph_edges=["a->b", "b->c", "c->d", "d->e", "e->f", "f->g"],
         pe=44.0,
@@ -105,7 +108,9 @@ def test_score_ticker_clear_bubble_flags():
 def test_score_ticker_builds_valuation_and_credit():
     r = score_ticker(
         "SPY",
-        bsadf_recent=[-0.50, -0.30], n_points=252,
+        bsadf_recent=[observation(-0.50, 42.0),
+                       observation(-0.30, 42.0)],
+        n_points=252,
         accel_ratio=None, graph_edges=[],
         pe=44.0, credit_gap_pct=9.0,
     )
@@ -134,7 +139,9 @@ def test_score_ticker_valuation_credit_alone_do_not_flag():
 def test_score_ticker_calm_does_not_flag():
     r = score_ticker(
         "SPY",
-        bsadf_recent=[-0.80, -0.60], n_points=252,
+        bsadf_recent=[observation(-0.80, 42.0),
+                       observation(-0.60, 42.0)],
+        n_points=252,
         accel_ratio=1.0,
         graph_edges=[],
     )
@@ -177,7 +184,9 @@ def test_score_ticker_lone_strong_news_signal_does_not_flag():
 def test_score_ticker_attaches_context():
     r = score_ticker(
         "GLD",
-        bsadf_recent=[-0.50, -0.30], n_points=252,
+        bsadf_recent=[observation(-0.50, 42.0),
+                       observation(-0.30, 42.0)],
+        n_points=252,
         accel_ratio=None, graph_edges=[],
         context={"close": 200.0, "change_pct_30d": 1.2},
     )
